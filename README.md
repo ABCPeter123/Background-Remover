@@ -44,7 +44,7 @@ The app is a Vite static application. Vercel automatically deploys commits to `m
 - The one-click IS-Net cutout identifies the primary foreground. For arbitrary objects, use **Smart Select**, powered by quantized **SlimSAM-77** (a compact Segment Anything model). It is not Meta's full SAM 2, nor Instagram's private sticker model.
 - Magic select uses an iterative, contiguous, color-distance flood fill. It works best when region colors are distinguishable; it is not semantic instance segmentation.
 - Very large input images are downscaled to at most 2800 pixels on the longest side and 8 megapixels total to manage browser memory. Exports use the processed image dimensions.
-- SlimSAM downloads approximately 14 MB of quantized model weights when first activated; the image encoder runs on a 1024px analysis image. Masks are upscaled to the editor's image size for preview and export. Encoding and decoding run in a browser Web Worker using ONNX Runtime Web. Actual latency depends on device performance.
+- SlimSAM's quantized model loads in a worker and image encoding starts when the browser is idle after an upload. A 1024px image is used for analysis. The preview uses the model-resolution mask; full-size mask upscaling is deferred until the user applies the selection. Actual latency depends on device performance.
 - AI model assets may take time to download initially, and inference performance depends on the device.
 - All processing is local, but downloading the optional AI model requires internet access.
 

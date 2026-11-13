@@ -67,7 +67,7 @@ export default function App() {
   const smartReadyRef = useRef(false);
   const smartLoadingRef = useRef(false);
   const smartPointsRef = useRef<SmartPoint[]>([]);
-  const smartMaskRef = useRef<Uint8Array | null>(null);
+  const smartPreviewRef = useRef<{ mask: Uint8Array; width: number; height: number } | null>(null);
   const frameRef = useRef<Frame | null>(null);
   const maskRef = useRef<Uint8Array | null>(null);
   const historyRef = useRef<{ past: Uint8Array[]; future: Uint8Array[] }>({ past: [], future: [] });
@@ -87,6 +87,7 @@ export default function App() {
   const [smartPoints, setSmartPoints] = useState<SmartPoint[]>([]);
   const [smartHasPreview, setSmartHasPreview] = useState(false);
   const [smartScore, setSmartScore] = useState<number | null>(null);
+  const [smartStage, setSmartStage] = useState('');
   const [tolerance, setTolerance] = useState(24);
   const [feather, setFeather] = useState(2);
   const [brushSize, setBrushSize] = useState(46);
@@ -170,29 +171,37 @@ export default function App() {
 
   const drawSmartOverlay = useCallback(() => {
     const canvas = smartOverlayRef.current;
-    const image = frameRef.current;
-    if (!canvas || !image) return;
-    const ctx = canvas.getContext('2d', { willReadFrequently: true });
-    if (!ctx) return;
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    const selection = smartMaskRef.current;
-    if (!selection || selection.length !== image.width * image.height) return;
-    const layer = ctx.createImageData(image.width, image.height);
-    for (let i = 0; i < selection.length; i++) {
-      if (selection[i] === 0) continue;
-      const offset = i * 4;
-      layer.data[offset] = 174;
-      layer.data[offset + 1] = 237;
-      layer.data[offset + 2] = 103;
-      layer.data[offset + 3] = Math.round(selection[i] * 0.44);
+    if (!canvas) return;
+    const context = canvas.getContext('2d');
+    if (!context) return;
+    context.clearRect(0, 0, canvas.width, canvas.height);
+    const selection = smartPreviewRef.current;
+    if (!selection) return;
+    // The preview stays at the model resolution instead of expanding
+    // an RGBA mask to the entire source image after every click.
+    const source = document.createElement('canvas');
+    source.width = selection.width;
+    source.height = selection.height;
+    const sourceContext = source.getContext('2d');
+    if (!sourceContext) return;
+    const layer = sourceContext.createImageData(selection.width, selection.height);
+    for (let i = 0; i < selection.mask.length; i++) {
+      if (!selection.mask[i]) continue;
+      const p = i * 4;
+      layer.data[p] = 174;
+      layer.data[p + 1] = 237;
+      layer.data[p + 2] = 103;
+      layer.data[p + 3] = Math.round(selection.mask[i] * 0.44);
     }
-    ctx.putImageData(layer, 0, 0);
+    sourceContext.putImageData(layer, 0, 0);
+    context.imageSmoothingEnabled = true;
+    context.drawImage(source, 0, 0, canvas.width, canvas.height);
   }, []);
 
   const clearSmartSelection = useCallback(() => {
     ++smartRequestRef.current;
     smartPointsRef.current = [];
-    smartMaskRef.current = null;
+    smartPreviewRef.current = null;
     setSmartPoints([]);
     setSmartHasPreview(false);
     setSmartPredicting(false);
@@ -209,22 +218,19 @@ export default function App() {
       const message = event.data;
       if (message.id !== smartVersionRef.current) return;
       if (message.type === 'progress') {
-        setBusy(message.stage);
+        setSmartStage(message.stage);
       } else if (message.type === 'ready') {
         smartReadyRef.current = true;
         smartLoadingRef.current = false;
         setSmartReady(true);
         setSmartLoading(false);
-        setBusy('');
-        setNotice('Smart Select is ready. Click an object to select it.');
+        setSmartStage('Model ready');
       } else if (message.type === 'selection') {
         if (message.requestId !== smartRequestRef.current) return;
         const current = frameRef.current;
         if (!current) return;
         try {
-          smartMaskRef.current = upscaleSmartMask(
-            message.mask, message.width, message.height, current.width, current.height,
-          );
+          smartPreviewRef.current = { mask: message.mask, width: message.width, height: message.height };
           setSmartHasPreview(true);
           setSmartScore(message.score);
           setSmartPredicting(false);
@@ -239,7 +245,7 @@ export default function App() {
         setSmartLoading(false);
         setSmartReady(false);
         setSmartPredicting(false);
-        setBusy('');
+        setSmartStage('');
         setError('Smart Select: ' + message.message + '. You can still use Magic Select or the brushes.');
       }
     };
@@ -251,7 +257,7 @@ export default function App() {
       setSmartLoading(false);
       setSmartReady(false);
       setSmartPredicting(false);
-      setBusy('');
+      setSmartStage('');
       setError('The Smart Select model could not start. Try reloading the page or use Magic Select.');
     };
     return worker;
@@ -264,7 +270,7 @@ export default function App() {
     smartLoadingRef.current = true;
     setSmartLoading(true);
     setError('');
-    setBusy('Preparing Smart Select...');
+    setSmartStage('Preparing image...');
     try {
       // Segment a 1024px analysis image, then resample the mask to export resolution.
       // Keeping encoding separate from decoding makes later clicks much faster.
@@ -275,7 +281,7 @@ export default function App() {
       if (id !== smartVersionRef.current) return;
       smartLoadingRef.current = false;
       setSmartLoading(false);
-      setBusy('');
+      setSmartStage('');
       setError(reason instanceof Error ? reason.message : 'Could not prepare the AI model.');
     }
   }, [ensureSmartWorker]);
@@ -285,15 +291,41 @@ export default function App() {
     if (!smartReadyRef.current) void prepareSmart();
   }, [prepareSmart]);
 
+  // Pre-compute the image embedding after upload without blocking the editor.
+  // When the user selects Smart Select, most of the startup work is done.
+  useEffect(() => {
+    if (!frame) return;
+    let idleHandle: number | undefined;
+    const delay = window.setTimeout(() => {
+      if ('requestIdleCallback' in window) {
+        idleHandle = window.requestIdleCallback(() => { void prepareSmart(); }, { timeout: 2500 });
+      } else {
+        void prepareSmart();
+      }
+    }, 1000);
+    return () => {
+      clearTimeout(delay);
+      if (idleHandle !== undefined && 'cancelIdleCallback' in window) window.cancelIdleCallback(idleHandle);
+    };
+  }, [frame, prepareSmart]);
+
   const commitSmartSelection = useCallback((action: 'keep' | 'remove') => {
     const current = maskRef.current;
-    const selected = smartMaskRef.current;
-    if (!current || !selected || smartPredicting || smartLoading) return;
-    saveHistory();
-    maskRef.current = applySmartSelection(current, selected, action);
-    setRevision(v => v + 1);
-    clearSmartSelection();
-    setNotice(action === 'keep' ? 'Only the selected object is kept.' : 'The selected object was removed.');
+    const preview = smartPreviewRef.current;
+    const image = frameRef.current;
+    if (!current || !image || !preview || smartPredicting || smartLoading) return;
+    try {
+      const selected = upscaleSmartMask(
+        preview.mask, preview.width, preview.height, image.width, image.height,
+      );
+      saveHistory();
+      maskRef.current = applySmartSelection(current, selected, action);
+      setRevision(v => v + 1);
+      clearSmartSelection();
+      setNotice(action === 'keep' ? 'Only the selected object is kept.' : 'The selected object was removed.');
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Could not apply the AI selection.');
+    }
   }, [clearSmartSelection, saveHistory, smartPredicting, smartLoading]);
 
   useEffect(() => () => {
@@ -332,6 +364,7 @@ export default function App() {
     clearSmartSelection();
     setSmartReady(false);
     setSmartLoading(false);
+    setSmartStage('');
     setBusy('Opening image...');
     setError('');
     setNotice('');
@@ -480,7 +513,7 @@ export default function App() {
       const nextPoints = [...smartPointsRef.current,
         promptToImageCoordinates({ ...point, label }, frameRef.current)];
       smartPointsRef.current = nextPoints;
-      smartMaskRef.current = null;
+      smartPreviewRef.current = null;
       setSmartPoints(nextPoints);
       setSmartHasPreview(false);
       setSmartScore(null);
@@ -677,8 +710,8 @@ export default function App() {
                       />
                       <canvas
                         ref={smartOverlayRef}
-                        width={frame.width}
-                        height={frame.height}
+                        width={Math.max(1, Math.round(frame.width * Math.min(1, 960 / Math.max(frame.width, frame.height))))}
+                        height={Math.max(1, Math.round(frame.height * Math.min(1, 960 / Math.max(frame.width, frame.height))))}
                         className="smart-overlay"
                         style={{ display: tool === 'smart' && !showOriginal ? undefined : 'none' }}
                         aria-hidden="true"
@@ -737,7 +770,7 @@ export default function App() {
               ) : (
                 <>
                   <div className="smart-status"><span className={'smart-status-dot ' + (smartReady ? 'is-ready' : '')} />
-                    {smartLoading ? 'Preparing image embeddings...' : smartPredicting ? 'Finding object...' :
+                    {smartLoading ? (smartStage || 'Preparing image embeddings...') : smartPredicting ? 'Finding object...' :
                       smartReady ? (smartHasPreview ? 'Selection preview ready' : 'Click an object in the image') : 'Preparing model...'}
                   </div>
                   <p className="smart-instructions">Click to include, Shift-click or right-click to exclude. You can add more points to refine the preview.</p>
