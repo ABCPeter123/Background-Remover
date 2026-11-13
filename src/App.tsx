@@ -14,6 +14,7 @@ import {
   type SmartPoint, type SmartWorkerMessage,
 } from './lib/smart';
 import type { ContrastAssistMode } from './lib/contrast';
+import { hasCutout, refineMaskEdges } from './lib/edges';
 
 type Tool = 'smart' | 'magic' | 'erase' | 'restore';
 type Backdrop = 'checker' | 'white' | 'dark' | 'mint';
@@ -62,6 +63,7 @@ export default function App() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const smartOverlayRef = useRef<HTMLCanvasElement>(null);
+  const edgeOverlayRef = useRef<HTMLCanvasElement>(null);
   const smartWorkerRef = useRef<Worker | null>(null);
   const smartVersionRef = useRef(0);
   const smartRequestRef = useRef(0);
@@ -72,7 +74,9 @@ export default function App() {
   const frameRef = useRef<Frame | null>(null);
   const maskRef = useRef<Uint8Array | null>(null);
   const historyRef = useRef<{ past: Uint8Array[]; future: Uint8Array[] }>({ past: [], future: [] });
-  const strokeRef = useRef<{ active: boolean; x: number; y: number }>({ active: false, x: 0, y: 0 });
+  const strokeRef = useRef<{ active: boolean; pointerId: number | null; x: number; y: number }>({
+    active: false, pointerId: null, x: 0, y: 0,
+  });
   const animationRef = useRef<number | null>(null);
   const dirtyRectRef = useRef<{ left: number; top: number; right: number; bottom: number } | null>(null);
   const taskIdRef = useRef(0);
@@ -92,6 +96,13 @@ export default function App() {
   const [mobileExclude, setMobileExclude] = useState(false);
   const [mobileMode] = useState(() => isMobileDevice());
   const [contrastAssist, setContrastAssist] = useState<ContrastAssistMode>('auto');
+  const [aiQuality, setAiQuality] = useState<'detail' | 'fast'>(() => isMobileDevice() ? 'fast' : 'detail');
+  const [edgeShift, setEdgeShift] = useState(0);
+  const [edgeSmooth, setEdgeSmooth] = useState(2);
+  const [edgeProtection, setEdgeProtection] = useState(82);
+  const [autoPolish, setAutoPolish] = useState(true);
+  const [showEdgeOutline, setShowEdgeOutline] = useState(false);
+  const [outlineRevision, setOutlineRevision] = useState(0);
   const [tolerance, setTolerance] = useState(24);
   const [feather, setFeather] = useState(2);
   const [brushSize, setBrushSize] = useState(46);
@@ -199,6 +210,39 @@ export default function App() {
     context.imageSmoothingEnabled = true;
     context.drawImage(source, 0, 0, canvas.width, canvas.height);
   }, []);
+
+  const drawEdgeOutline = useCallback(() => {
+    const canvas = edgeOverlayRef.current;
+    const image = frameRef.current;
+    const mask = maskRef.current;
+    if (!canvas || !image || !mask) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    if (!showEdgeOutline) return;
+    const { width, height } = canvas;
+    const pixels = ctx.createImageData(width, height);
+    for (let y = 0; y < height; y++) {
+      const sourceY = Math.min(image.height - 1, Math.floor((y + .5) * image.height / height));
+      const sourceBelow = Math.min(image.height - 1, Math.floor((y + 1.5) * image.height / height));
+      for (let x = 0; x < width; x++) {
+        const sourceX = Math.min(image.width - 1, Math.floor((x + .5) * image.width / width));
+        const sourceRight = Math.min(image.width - 1, Math.floor((x + 1.5) * image.width / width));
+        const value = mask[sourceY * image.width + sourceX];
+        const right = mask[sourceY * image.width + sourceRight];
+        const below = mask[sourceBelow * image.width + sourceX];
+        if (Math.max(Math.abs(value - right), Math.abs(value - below)) < 48) continue;
+        const index = (y * width + x) * 4;
+        pixels.data[index] = 99;
+        pixels.data[index + 1] = 236;
+        pixels.data[index + 2] = 213;
+        pixels.data[index + 3] = 244;
+      }
+    }
+    ctx.putImageData(pixels, 0, 0);
+  }, [showEdgeOutline]);
+
+  useEffect(() => { drawEdgeOutline(); }, [drawEdgeOutline, frame, revision, outlineRevision]);
 
   const clearSmartSelection = useCallback(() => {
     setMobileExclude(false);
@@ -324,14 +368,17 @@ export default function App() {
         preview.mask, preview.width, preview.height, image.width, image.height,
       );
       saveHistory();
-      maskRef.current = applySmartSelection(current, selected, action);
+      const result = applySmartSelection(current, selected, action);
+      maskRef.current = autoPolish ? refineMaskEdges(image, result, {
+        shift: 0, smooth: 1, protection: 85,
+      }) : result;
       setRevision(v => v + 1);
       clearSmartSelection();
       setNotice(action === 'keep' ? 'Only the selected object is kept.' : 'The selected object was removed.');
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Could not apply the AI selection.');
     }
-  }, [clearSmartSelection, saveHistory, smartPredicting, smartLoading]);
+  }, [autoPolish, clearSmartSelection, saveHistory, smartPredicting, smartLoading]);
 
   useEffect(() => () => {
     smartWorkerRef.current?.terminate();
@@ -456,6 +503,7 @@ export default function App() {
       if (key === 'v') setTool('magic');
       if (key === 'e') setTool('erase');
       if (key === 'r') setTool('restore');
+      if (key === 'p' && frameRef.current) setShowEdgeOutline(v => !v);
     };
     const onPaste = (event: ClipboardEvent) => {
       const image = Array.from(event.clipboardData?.items ?? []).find((item) => item.type.startsWith('image/'));
@@ -511,6 +559,7 @@ export default function App() {
     // Prevent a tap or brush movement from initiating image drag/long-press
     // menus in mobile browsers while keeping scrolling outside the canvas usable.
     if (event.pointerType === 'touch') event.preventDefault();
+    if (strokeRef.current.active) return;
     const point = getPoint(event);
     if (tool === 'smart') {
       if (!smartReadyRef.current) { void prepareSmart(); return; }
@@ -542,11 +591,14 @@ export default function App() {
       );
       maskRef.current = result.mask;
       const { left, top, right, bottom } = result.bounds;
-      if (right > left && bottom > top) scheduleRedraw(left, top, right, bottom);
+      if (right > left && bottom > top) {
+        scheduleRedraw(left, top, right, bottom);
+        setOutlineRevision(v => v + 1);
+      }
       return;
     }
-    strokeRef.current = { active: true, ...point };
-    event.currentTarget.setPointerCapture(event.pointerId);
+    strokeRef.current = { active: true, pointerId: event.pointerId, ...point };
+    try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* old browsers */ }
     stampBrush(maskRef.current, frameRef.current.width, frameRef.current.height, point.x, point.y,
       brushSize / 2, softness / 100, tool === 'restore' ? 'restore' : 'erase');
     const radius = brushSize / 2 + 2;
@@ -554,17 +606,52 @@ export default function App() {
   };
 
   const onPointerMove = (event: React.PointerEvent<HTMLCanvasElement>) => {
-    if (!strokeRef.current.active || !maskRef.current || !frameRef.current) return;
+    if (!strokeRef.current.active || strokeRef.current.pointerId !== event.pointerId ||
+      !maskRef.current || !frameRef.current) return;
     if (event.pointerType === 'touch') event.preventDefault();
     const point = getPoint(event);
     drawStroke(point.x, point.y);
   };
 
-  const onPointerUp = () => {
-    if (!strokeRef.current.active) return;
+  const onPointerUp = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!strokeRef.current.active || strokeRef.current.pointerId !== event.pointerId) return;
     strokeRef.current.active = false;
-    // Dirty canvas patches have already been scheduled. A full-image redraw
-    // here would undo their performance benefit.
+    strokeRef.current.pointerId = null;
+    try {
+      if (event.currentTarget.hasPointerCapture(event.pointerId))
+        event.currentTarget.releasePointerCapture(event.pointerId);
+    } catch { /* Already released by the browser */ }
+    // Do not repaint the full canvas. The touched patches are already queued.
+    setOutlineRevision(v => v + 1);
+  };
+
+  const polishEdges = () => {
+    const image = frameRef.current;
+    const mask = maskRef.current;
+    if (!image || !mask || busy) return;
+    if (!hasCutout(mask)) {
+      setNotice('Remove a background or select an object before refining its edge.');
+      return;
+    }
+    setBusy('Refining the cutout edge...');
+    setError('');
+    // Allow the busy indicator to paint before processing.
+    window.setTimeout(() => {
+      try {
+        const result = refineMaskEdges(image, mask, {
+          shift: edgeShift, smooth: edgeSmooth, protection: edgeProtection,
+        });
+        if (frameRef.current !== image || maskRef.current !== mask) return;
+        saveHistory();
+        maskRef.current = result;
+        setRevision(v => v + 1);
+        setNotice('Edges refined. Use Undo to compare or adjust the controls.');
+      } catch (reason) {
+        setError(reason instanceof Error ? reason.message : 'Could not refine this edge.');
+      } finally {
+        setBusy('');
+      }
+    }, 16);
   };
 
   const runAI = async () => {
@@ -580,26 +667,37 @@ export default function App() {
       const input = await frameToBlob(current, 1024, contrastAssist);
       const { removeBackground } = await import('@imgly/background-removal');
       if (task !== taskIdRef.current) return;
-      const output = await removeBackground(input, {
-        model: 'isnet_quint8',
-        device: 'cpu',
-        // Skip expensive JS upscaling inside IMG.LY. Canvas will upscale
-        // the 1024px alpha mask directly to the original export dimensions.
+      const config = (model: 'isnet_fp16' | 'isnet_quint8') => ({
+        model,
+        device: 'cpu' as const,
+        // The output mask is resized using Canvas, not generic JS resampling.
         rescale: false,
-        output: { format: 'image/png', quality: 1 },
+        output: { format: 'image/png' as const, quality: 1 },
         progress: (_key: string, done: number, total: number) => {
           if (task !== taskIdRef.current || total <= 0) return;
           setProgress(Math.max(0, Math.min(99, Math.round(done / total * 100))));
         },
       });
+      const preferDetail = aiQuality === 'detail' && !isMobileDevice();
+      let output: Blob;
+      try {
+        output = await removeBackground(input, config(preferDetail ? 'isnet_fp16' : 'isnet_quint8'));
+      } catch (primaryError) {
+        if (!preferDetail) throw primaryError;
+        // Limited-memory browsers can refuse the larger model.
+        setBusy('Detail model unavailable. Trying faster AI...');
+        output = await removeBackground(input, config('isnet_quint8'));
+      }
       if (task !== taskIdRef.current) return;
       const next = await alphaMaskFromBlob(output, current);
       if (task !== taskIdRef.current) return;
       saveHistory();
-      maskRef.current = next;
+      maskRef.current = autoPolish
+        ? refineMaskEdges(current, next, { shift: 0, smooth: 1, protection: 85 })
+        : next;
       setRevision((v) => v + 1);
       setProgress(100);
-      setNotice('AI cutout ready. Original colors preserved. Refine edges with the brushes.');
+      setNotice('AI cutout ready. Use Edge Studio to refine the silhouette.');
     } catch (reason) {
       if (task === taskIdRef.current) setError(reason instanceof Error ? reason.message : 'AI cutout failed. Try the magic select tool.');
     } finally {
@@ -746,6 +844,14 @@ export default function App() {
                         aria-label="Interactive image canvas. Click a region or object to select it, or use the brushes."
                       />
                       <canvas
+                        ref={edgeOverlayRef}
+                        width={Math.max(1, Math.round(frame.width * Math.min(1, 960 / Math.max(frame.width, frame.height))))}
+                        height={Math.max(1, Math.round(frame.height * Math.min(1, 960 / Math.max(frame.width, frame.height))))}
+                        className="edge-overlay"
+                        style={{ display: showEdgeOutline && !showOriginal ? undefined : 'none' }}
+                        aria-hidden="true"
+                      />
+                      <canvas
                         ref={smartOverlayRef}
                         width={Math.max(1, Math.round(frame.width * Math.min(1, 960 / Math.max(frame.width, frame.height))))}
                         height={Math.max(1, Math.round(frame.height * Math.min(1, 960 / Math.max(frame.width, frame.height))))}
@@ -861,6 +967,17 @@ export default function App() {
                     ? 'Boosts faint subjects only when the photo looks washed out.'
                     : 'Uses the unadjusted photo for AI detection.'}</p>
               </div>
+              <div className="ai-quality-controls">
+                <span>MODEL QUALITY</span>
+                <div role="group" aria-label="Background detection model quality">
+                  <button type="button" className={aiQuality === 'fast' ? 'selected' : ''}
+                    onClick={() => setAiQuality('fast')} disabled={!!busy}>Fast</button>
+                  <button type="button" className={aiQuality === 'detail' ? 'selected' : ''}
+                    onClick={() => setAiQuality('detail')} disabled={!!busy || mobileMode}
+                    title={mobileMode ? 'Detail model is limited to desktop to protect phone memory' : 'Higher-precision model, larger download'}>Detail</button>
+                </div>
+                <p>{mobileMode ? 'Fast mode protects phone memory.' : 'Detail uses a higher-precision model. First run downloads extra model data.'}</p>
+              </div>
               <button type="button" className="ai-action" disabled={!frame || !!busy} onClick={() => void runAI()}><WandSparkles size={18} /> Remove background <ChevronRight size={18} /></button>
               <small>No upload. Model downloads on first use.</small>
             </div>
@@ -881,6 +998,25 @@ export default function App() {
                 </>
               )}
               <button type="button" className="invert-button" onClick={invertMask} disabled={!frame || !!busy}><ArrowLeftRight size={16} /><span>Invert removed area</span><ChevronRight size={15} /></button>
+            </div>
+
+            <div className="edge-studio">
+              <div className="edge-studio-title"><span><Scissors size={16} /> EDGE STUDIO</span><span>PRECISION</span></div>
+              <p className="edge-description">Clean white halos, recover clipped details, and smooth jagged outlines.</p>
+              <RangeControl label="Edge position" value={edgeShift} unit="px" min={-6} max={6}
+                onChange={setEdgeShift}
+                hint={edgeShift < 0 ? 'Trim inward to remove background fringe.' : edgeShift > 0 ? 'Expand outward to recover missing pixels.' : 'Keep the current boundary position.'} />
+              <RangeControl label="Edge smoothness" value={edgeSmooth} unit="px" min={0} max={4}
+                onChange={setEdgeSmooth} hint="Soften rough pixels without blurring the whole subject." />
+              <RangeControl label="Protect image edges" value={edgeProtection} unit="%" min={0} max={100}
+                onChange={setEdgeProtection} hint="Higher values follow color boundaries more closely." />
+              <label className="edge-check"><input type="checkbox" checked={autoPolish} onChange={event => setAutoPolish(event.target.checked)} />
+                <span>Automatically polish new AI cutouts</span></label>
+              <label className="edge-check"><input type="checkbox" checked={showEdgeOutline} onChange={event => setShowEdgeOutline(event.target.checked)} />
+                <span>Show cutout edge outline</span></label>
+              <button type="button" className="edge-apply" disabled={!frame || !!busy} onClick={polishEdges}>
+                <Sparkles size={17} /> Refine edges <ChevronRight size={16} /></button>
+              <p className="edge-footnote">Non-destructive source colors. Undo any refinement.</p>
             </div>
 
             <div className="settings-section preview-section">
