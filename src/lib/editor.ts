@@ -89,6 +89,99 @@ export async function decodeImage(file: Blob): Promise<Frame> {
   }
 }
 
+type FloodResult = {
+  region: Uint8Array;
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+};
+
+// Span-based flood fill needs no full-image Int32 queue. It is considerably
+// faster for broad, contiguous regions such as sky or studio backgrounds.
+function scanFloodRegion(
+  pixels: Uint8ClampedArray,
+  width: number,
+  height: number,
+  x: number,
+  y: number,
+  tolerance: number,
+): FloodResult {
+  const count = width * height;
+  const region = new Uint8Array(count);
+  const empty: FloodResult = { region, left: 0, top: 0, right: 0, bottom: 0 };
+  if (x < 0 || y < 0 || x >= width || y >= height) return empty;
+  const seed = Math.floor(y) * width + Math.floor(x);
+  const offset = seed * 4;
+  const sr = pixels[offset];
+  const sg = pixels[offset + 1];
+  const sb = pixels[offset + 2];
+  const sa = pixels[offset + 3];
+  const limit = (5 + (Math.max(0, Math.min(100, tolerance)) / 100) * 215) ** 2;
+  const visited = new Uint8Array(count);
+  const matches = (index: number): boolean => {
+    const p = index * 4;
+    const dr = pixels[p] - sr;
+    const dg = pixels[p + 1] - sg;
+    const db = pixels[p + 2] - sb;
+    const da = pixels[p + 3] - sa;
+    return 0.32 * dr * dr + 0.54 * dg * dg + 0.14 * db * db + 0.3 * da * da <= limit;
+  };
+  const stack: number[] = [seed];
+  let left = width;
+  let top = height;
+  let right = 0;
+  let bottom = 0;
+  while (stack.length > 0) {
+    const start = stack.pop()!;
+    if (visited[start]) continue;
+    const row = Math.floor(start / width);
+    const rowStart = row * width;
+    let col = start - rowStart;
+    if (!matches(start)) {
+      visited[start] = 1;
+      continue;
+    }
+    while (col > 0 && !visited[rowStart + col - 1] && matches(rowStart + col - 1)) col--;
+    const rowLeft = col;
+    let aboveRun = false;
+    let belowRun = false;
+    for (; col < width; col++) {
+      const index = rowStart + col;
+      if (visited[index]) break;
+      if (!matches(index)) {
+        visited[index] = 1;
+        break;
+      }
+      visited[index] = 1;
+      region[index] = 255;
+      if (row > 0) {
+        const above = index - width;
+        if (!visited[above] && matches(above)) {
+          if (!aboveRun) stack.push(above);
+          aboveRun = true;
+        } else {
+          aboveRun = false;
+        }
+      }
+      if (row + 1 < height) {
+        const below = index + width;
+        if (!visited[below] && matches(below)) {
+          if (!belowRun) stack.push(below);
+          belowRun = true;
+        } else {
+          belowRun = false;
+        }
+      }
+    }
+    left = Math.min(left, rowLeft);
+    right = Math.max(right, col);
+    top = Math.min(top, row);
+    bottom = Math.max(bottom, row + 1);
+  }
+  return { region, left, top, right, bottom };
+}
+
 export function floodRegion(
   pixels: Uint8ClampedArray,
   width: number,
