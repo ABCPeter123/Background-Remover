@@ -163,32 +163,37 @@ export function refineEdgeBrushStamp(
   }
   const sigma = 115 - Math.max(0, Math.min(100, protection));
   const intensity = Math.max(0, Math.min(1, strength));
-  for (let yy = 1; yy < localHeight - 1; yy++) {
+  for (let yy = 0; yy < localHeight; yy++) {
     const py = top + yy;
-    for (let xx = 1; xx < localWidth - 1; xx++) {
+    for (let xx = 0; xx < localWidth; xx++) {
       const px = left + xx;
       const d = Math.hypot(px + .5 - x, py + .5 - y);
       if (d > r) continue;
       const localIndex = yy * localWidth + xx;
       const value = source[localIndex];
       const adjacent = [
-        localIndex - 1, localIndex + 1,
-        localIndex - localWidth, localIndex + localWidth,
+        yy * localWidth + Math.max(0, xx - 1),
+        yy * localWidth + Math.min(localWidth - 1, xx + 1),
+        Math.max(0, yy - 1) * localWidth + xx,
+        Math.min(localHeight - 1, yy + 1) * localWidth + xx,
       ];
       if (adjacent.every(i => Math.abs(source[i] - value) < 10)) continue;
       const p = (py * width + px) * 4;
       const cr = pixels[p], cg = pixels[p + 1], cb = pixels[p + 2];
       let total = 0, weighted = 0;
       for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
-        const idx = (py + dy) * width + px + dx;
-        const color = idx * 4;
+        const sourceY = Math.min(height - 1, Math.max(0, py + dy));
+        const sourceX = Math.min(width - 1, Math.max(0, px + dx));
+        const color = (sourceY * width + sourceX) * 4;
+        const sourceIndex = Math.min(localHeight - 1, Math.max(0, yy + dy)) * localWidth +
+          Math.min(localWidth - 1, Math.max(0, xx + dx));
         const diff = Math.sqrt(
           .3 * (pixels[color] - cr) ** 2 +
           .59 * (pixels[color + 1] - cg) ** 2 +
           .11 * (pixels[color + 2] - cb) ** 2,
         );
         const weight = Math.exp(-diff * diff / (2 * sigma * sigma)) * (dx === 0 && dy === 0 ? 1 : .62);
-        weighted += source[localIndex + dy * localWidth + dx] * weight;
+        weighted += source[sourceIndex] * weight;
         total += weight;
       }
       const falloff = Math.min(1, Math.max(0, (r - d) / Math.max(1, r * .22)));

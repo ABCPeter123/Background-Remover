@@ -11,7 +11,8 @@ describe('localized refine brush', () => {
     const mask = new Uint8Array(81);
     for (let y=0;y<9;y++) for (let x=5;x<9;x++) mask[y*9+x] = 255;
     const bounds = refineEdgeBrushStamp(frame,mask,4.5,4.5,2.8,82,1);
-    expect(bounds.left).toBeGreaterThan(0);
+    expect(bounds.left).toBeGreaterThanOrEqual(0);
+    expect(bounds.right).toBeLessThanOrEqual(frame.width);
     expect(mask[4*9+4]).toBeGreaterThan(0);
     expect(mask[4*9+4]).toBeLessThan(255);
     expect(mask[0]).toBe(0);
