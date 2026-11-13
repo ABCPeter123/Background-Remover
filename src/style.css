@@ -262,3 +262,192 @@ button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
 }
+
+
+/* Object-aware selection UI */
+.smart-card {
+  border-radius: 13px;
+  border: 1px solid #536e46;
+  background: linear-gradient(140deg, #263726, #1f2921);
+  padding: 16px 14px;
+  margin-bottom: 14px;
+}
+.smart-card-active {
+  border-color: #a4db70;
+  box-shadow: inset 0 1px 0 #d8fca418;
+}
+.smart-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #d6f5ae;
+}
+.smart-heading strong { font-size: 14px; letter-spacing: -.3px; }
+.smart-heading span {
+  margin-left: auto;
+  font-size: 9px;
+  font-weight: 750;
+  letter-spacing: 1px;
+  color: #a6c98d;
+  border: 1px solid #637954;
+  padding: 3px 5px;
+  border-radius: 4px;
+}
+.smart-description {
+  margin: 10px 0 13px;
+  color: #b0c3ac;
+  font-size: 11px;
+  line-height: 1.6;
+}
+.smart-open {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border: 1px solid #a4c778;
+  background: #bde68b;
+  color: #193014;
+  border-radius: 8px;
+  padding: 11px 9px;
+  font-size: 11px;
+  font-weight: 800;
+}
+.smart-open svg:last-child { margin-left: auto; }
+.smart-open:hover:not(:disabled) { background: #ddf6b7; }
+.smart-open:disabled { opacity: .35; }
+.smart-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #d0edb7;
+  font-size: 11px;
+  font-weight: 660;
+  padding: 10px 0;
+}
+.smart-status-dot {
+  width: 7px;
+  height: 7px;
+  flex-shrink: 0;
+  border-radius: 100%;
+  background: #e4bd68;
+}
+.smart-status-dot.is-ready { background: #b0e474; }
+.smart-instructions {
+  color: #a9bda8;
+  line-height: 1.6;
+  font-size: 11px;
+  margin: 2px 0 15px;
+}
+.smart-score {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  color: #9fb795;
+  letter-spacing: .7px;
+  font-weight: 750;
+  font-size: 9px;
+  border-top: 1px solid #476043;
+  padding: 10px 0;
+}
+.smart-score strong { font-size: 13px; color: #d3f9a9; }
+.smart-apply {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 7px;
+  margin-top: 10px;
+}
+.smart-apply button {
+  padding: 11px 7px;
+  border-radius: 8px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+  font-weight: 770;
+}
+.smart-keep { color: #20301a; background: #c5ee91; border: 1px solid #c5ee91; }
+.smart-remove { color: #e2f2d6; background: #33482f; border: 1px solid #64815b; }
+.smart-apply button:hover:not(:disabled) { filter: brightness(1.12); }
+.smart-apply button:disabled { opacity: .33; }
+.smart-clear {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 12px;
+  background: none;
+  border: 0;
+  color: #a7bca1;
+  padding: 0;
+  font-size: 11px;
+}
+.smart-clear:disabled { opacity: .4; }
+.canvas-visual {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+  max-height: 64vh;
+  flex-shrink: 0;
+  line-height: 0;
+  transform-origin: center;
+}
+.canvas-visual .image-canvas {
+  display: block;
+  max-width: 100%;
+  max-height: 64vh;
+  transform: none;
+}
+.smart-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+.smart-point {
+  position: absolute;
+  z-index: 2;
+  width: 23px;
+  height: 23px;
+  transform: translate(-50%, -50%);
+  border: 2px solid white;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  color: #0a1a08;
+  font-size: 15px;
+  font-weight: 900;
+  font-family: Arial, sans-serif;
+  line-height: 1;
+  pointer-events: none;
+  box-shadow: 0 1px 7px #0009;
+}
+.smart-point.positive { background: #c6ef84; }
+.smart-point.negative { background: #f3a39b; }
+.selection-pill {
+  position: absolute;
+  pointer-events: none;
+  left: 14px;
+  bottom: 14px;
+  color: #d8f8b2;
+  background: #1b3228ed;
+  border: 1px solid #729864;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 10px;
+  letter-spacing: .6px;
+  font-weight: 760;
+  padding: 8px 10px;
+}
+@media (max-width: 1060px) {
+  .smart-card { padding: 18px; }
+  .smart-apply button { font-size: 12px; }
+}
+@media (max-width: 660px) {
+  .canvas-visual { max-height: 58vh; }
+  .canvas-visual .image-canvas { max-height: 58vh; }
+}
