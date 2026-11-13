@@ -9,8 +9,12 @@ import {
   alphaMaskFromBlob, composeImage, decodeImage, frameToBlob,
   pngBlob, stampBrush, wandSelect, type Frame, type BrushMode,
 } from './lib/editor';
+import {
+  applySmartSelection, promptToImageCoordinates, upscaleSmartMask,
+  type SmartPoint, type SmartWorkerMessage,
+} from './lib/smart';
 
-type Tool = 'magic' | 'erase' | 'restore';
+type Tool = 'smart' | 'magic' | 'erase' | 'restore';
 type Backdrop = 'checker' | 'white' | 'dark' | 'mint';
 
 const MAX_HISTORY = 12;
@@ -56,6 +60,14 @@ function RangeControl({ label, value, unit, min, max, onChange, hint }: {
 export default function App() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const smartOverlayRef = useRef<HTMLCanvasElement>(null);
+  const smartWorkerRef = useRef<Worker | null>(null);
+  const smartVersionRef = useRef(0);
+  const smartRequestRef = useRef(0);
+  const smartReadyRef = useRef(false);
+  const smartLoadingRef = useRef(false);
+  const smartPointsRef = useRef<SmartPoint[]>([]);
+  const smartMaskRef = useRef<Uint8Array | null>(null);
   const frameRef = useRef<Frame | null>(null);
   const maskRef = useRef<Uint8Array | null>(null);
   const historyRef = useRef<{ past: Uint8Array[]; future: Uint8Array[] }>({ past: [], future: [] });
@@ -68,6 +80,12 @@ export default function App() {
   const [fileName, setFileName] = useState('');
   const [fileSize, setFileSize] = useState(0);
   const [tool, setTool] = useState<Tool>('magic');
+  const [smartReady, setSmartReady] = useState(false);
+  const [smartLoading, setSmartLoading] = useState(false);
+  const [smartPredicting, setSmartPredicting] = useState(false);
+  const [smartPoints, setSmartPoints] = useState<SmartPoint[]>([]);
+  const [smartHasPreview, setSmartHasPreview] = useState(false);
+  const [smartScore, setSmartScore] = useState<number | null>(null);
   const [tolerance, setTolerance] = useState(24);
   const [feather, setFeather] = useState(2);
   const [brushSize, setBrushSize] = useState(46);
@@ -117,7 +135,139 @@ export default function App() {
     });
   }, [redraw]);
 
-  useEffect(() => { redraw(); }, [frame, revision, redraw]);
+
+  const drawSmartOverlay = useCallback(() => {
+    const canvas = smartOverlayRef.current;
+    const image = frameRef.current;
+    if (!canvas || !image) return;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    if (!ctx) return;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    const selection = smartMaskRef.current;
+    if (!selection || selection.length !== image.width * image.height) return;
+    const layer = ctx.createImageData(image.width, image.height);
+    for (let i = 0; i < selection.length; i++) {
+      if (selection[i] === 0) continue;
+      const offset = i * 4;
+      layer.data[offset] = 174;
+      layer.data[offset + 1] = 237;
+      layer.data[offset + 2] = 103;
+      layer.data[offset + 3] = Math.round(selection[i] * 0.44);
+    }
+    ctx.putImageData(layer, 0, 0);
+  }, []);
+
+  const clearSmartSelection = useCallback(() => {
+    ++smartRequestRef.current;
+    smartPointsRef.current = [];
+    smartMaskRef.current = null;
+    setSmartPoints([]);
+    setSmartHasPreview(false);
+    setSmartPredicting(false);
+    setSmartScore(null);
+    const overlay = smartOverlayRef.current;
+    overlay?.getContext('2d')?.clearRect(0, 0, overlay.width, overlay.height);
+  }, []);
+
+  const ensureSmartWorker = useCallback((): Worker => {
+    if (smartWorkerRef.current) return smartWorkerRef.current;
+    const worker = new Worker(new URL('./workers/smart.worker.ts', import.meta.url), { type: 'module' });
+    smartWorkerRef.current = worker;
+    worker.onmessage = (event: MessageEvent<SmartWorkerMessage>) => {
+      const message = event.data;
+      if (message.id !== smartVersionRef.current) return;
+      if (message.type === 'progress') {
+        setBusy(message.stage);
+      } else if (message.type === 'ready') {
+        smartReadyRef.current = true;
+        smartLoadingRef.current = false;
+        setSmartReady(true);
+        setSmartLoading(false);
+        setBusy('');
+        setNotice('Smart Select is ready. Click an object to select it.');
+      } else if (message.type === 'selection') {
+        if (message.requestId !== smartRequestRef.current) return;
+        const current = frameRef.current;
+        if (!current) return;
+        try {
+          smartMaskRef.current = upscaleSmartMask(
+            message.mask, message.width, message.height, current.width, current.height,
+          );
+          setSmartHasPreview(true);
+          setSmartScore(message.score);
+          setSmartPredicting(false);
+          drawSmartOverlay();
+        } catch (reason) {
+          setSmartPredicting(false);
+          setError(reason instanceof Error ? reason.message : 'Could not preview the AI selection.');
+        }
+      } else if (message.type === 'error') {
+        smartLoadingRef.current = false;
+        smartReadyRef.current = false;
+        setSmartLoading(false);
+        setSmartReady(false);
+        setSmartPredicting(false);
+        setBusy('');
+        setError('Smart Select: ' + message.message + '. You can still use Magic Select or the brushes.');
+      }
+    };
+    worker.onerror = () => {
+      smartLoadingRef.current = false;
+      smartReadyRef.current = false;
+      setSmartLoading(false);
+      setSmartReady(false);
+      setSmartPredicting(false);
+      setBusy('');
+      setError('The Smart Select model could not start. Try reloading the page or use Magic Select.');
+    };
+    return worker;
+  }, [drawSmartOverlay]);
+
+  const prepareSmart = useCallback(async () => {
+    const image = frameRef.current;
+    if (!image || smartReadyRef.current || smartLoadingRef.current) return;
+    const id = ++smartVersionRef.current;
+    smartLoadingRef.current = true;
+    setSmartLoading(true);
+    setError('');
+    setBusy('Preparing Smart Select...');
+    try {
+      // Segment a 1024px analysis image, then resample the mask to export resolution.
+      // Keeping encoding separate from decoding makes later clicks much faster.
+      const blob = await frameToBlob(image, 1024);
+      if (id !== smartVersionRef.current) return;
+      ensureSmartWorker().postMessage({ type: 'prepare', id, image: blob });
+    } catch (reason) {
+      if (id !== smartVersionRef.current) return;
+      smartLoadingRef.current = false;
+      setSmartLoading(false);
+      setBusy('');
+      setError(reason instanceof Error ? reason.message : 'Could not prepare the AI model.');
+    }
+  }, [ensureSmartWorker]);
+
+  const activateSmart = useCallback(() => {
+    setTool('smart');
+    if (!smartReadyRef.current) void prepareSmart();
+  }, [prepareSmart]);
+
+  const commitSmartSelection = useCallback((action: 'keep' | 'remove') => {
+    const current = maskRef.current;
+    const selected = smartMaskRef.current;
+    if (!current || !selected || smartPredicting || smartLoading) return;
+    saveHistory();
+    maskRef.current = applySmartSelection(current, selected, action);
+    setRevision(v => v + 1);
+    clearSmartSelection();
+    setNotice(action === 'keep' ? 'Only the selected object is kept.' : 'The selected object was removed.');
+  }, [clearSmartSelection, saveHistory, smartPredicting, smartLoading]);
+
+  useEffect(() => () => {
+    smartWorkerRef.current?.terminate();
+    smartWorkerRef.current = null;
+  }, []);
+
+  useEffect(() => { redraw(); drawSmartOverlay(); }, [frame, revision, redraw, drawSmartOverlay]);
 
   useEffect(() => {
     originalRef.current = showOriginal;
@@ -141,6 +291,13 @@ export default function App() {
       return;
     }
     const task = ++taskIdRef.current;
+    const smartId = ++smartVersionRef.current;
+    smartWorkerRef.current?.postMessage({ type: 'reset', id: smartId });
+    smartReadyRef.current = false;
+    smartLoadingRef.current = false;
+    clearSmartSelection();
+    setSmartReady(false);
+    setSmartLoading(false);
     setBusy('Opening image...');
     setError('');
     setNotice('');
@@ -168,7 +325,7 @@ export default function App() {
       if (task === taskIdRef.current) setBusy('');
       if (fileInputRef.current) fileInputRef.current.value = '';
     }
-  }, [syncHistory]);
+  }, [syncHistory, clearSmartSelection]);
 
   const undo = useCallback(() => {
     const current = maskRef.current;
@@ -222,6 +379,7 @@ export default function App() {
       if (modifier && event.key.toLowerCase() === 'y') { event.preventDefault(); redo(); return; }
       if (modifier || event.altKey) return;
       const key = event.key.toLowerCase();
+      if (key === 's' && frameRef.current) activateSmart();
       if (key === 'v') setTool('magic');
       if (key === 'e') setTool('erase');
       if (key === 'r') setTool('restore');
@@ -238,7 +396,7 @@ export default function App() {
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('paste', onPaste);
     };
-  }, [loadFile, redo, undo]);
+  }, [activateSmart, loadFile, redo, undo]);
 
   const getPoint = (event: React.PointerEvent<HTMLCanvasElement>) => {
     const rect = event.currentTarget.getBoundingClientRect();
@@ -271,8 +429,27 @@ export default function App() {
   };
 
   const onPointerDown = (event: React.PointerEvent<HTMLCanvasElement>) => {
-    if (event.button !== 0 || busy || showOriginal || !frameRef.current || !maskRef.current) return;
+    if ((event.button !== 0 && !(tool === 'smart' && event.button === 2)) ||
+      busy || showOriginal || !frameRef.current || !maskRef.current) return;
     const point = getPoint(event);
+    if (tool === 'smart') {
+      if (!smartReadyRef.current) { void prepareSmart(); return; }
+      const label: 0 | 1 = event.button === 2 || event.shiftKey ? 0 : 1;
+      const nextPoints = [...smartPointsRef.current,
+        promptToImageCoordinates({ ...point, label }, frameRef.current)];
+      smartPointsRef.current = nextPoints;
+      smartMaskRef.current = null;
+      setSmartPoints(nextPoints);
+      setSmartHasPreview(false);
+      setSmartScore(null);
+      setSmartPredicting(true);
+      drawSmartOverlay();
+      const requestId = ++smartRequestRef.current;
+      ensureSmartWorker().postMessage({
+        type: 'segment', id: smartVersionRef.current, requestId, points: nextPoints,
+      });
+      return;
+    }
     saveHistory();
     if (tool === 'magic') {
       maskRef.current = wandSelect(frameRef.current, maskRef.current, point.x, point.y, tolerance, feather,
@@ -366,7 +543,7 @@ export default function App() {
     else setError('Please drop an image file.');
   };
 
-  const selectedToolName = tool === 'magic' ? 'Magic select' : tool === 'erase' ? 'Erase brush' : 'Restore brush';
+  const selectedToolName = tool === 'smart' ? 'Smart select (AI)' : tool === 'magic' ? 'Magic select' : tool === 'erase' ? 'Erase brush' : 'Restore brush';
 
   return (
     <div className="application">
@@ -400,6 +577,7 @@ export default function App() {
             <h2>Your toolkit</h2>
             <p className="panel-subtitle">Choose how you want to edit.</p>
             <div className="tool-list">
+              <ToolButton active={tool === 'smart'} disabled={!frame || !!busy} icon={Sparkles} title="Smart select (AI)" description="Select real objects by click" shortcut="S" onClick={activateSmart} />
               <ToolButton active={tool === 'magic'} disabled={!frame || !!busy} icon={WandSparkles} title="Magic select" description="Click a region to remove" shortcut="V" onClick={() => setTool('magic')} />
               <ToolButton active={tool === 'erase'} disabled={!frame || !!busy} icon={Eraser} title="Erase brush" description="Remove any detail" shortcut="E" onClick={() => setTool('erase')} />
               <ToolButton active={tool === 'restore'} disabled={!frame || !!busy} icon={Brush} title="Restore brush" description="Bring pixels back" shortcut="R" onClick={() => setTool('restore')} />
@@ -415,7 +593,7 @@ export default function App() {
 
             <div className="left-help">
               <span className="help-badge"><CircleHelp size={15} /> QUICK TIP</span>
-              <p>{tool === 'magic' ? 'Click any part of the image to erase connected pixels with similar colors. Hold Shift and click to restore.' : tool === 'erase' ? 'Paint over anything you want to remove. Make the brush smaller for fine details.' : 'Paint over erased parts to bring them back. Great for hair, clothes, and edges.'}</p>
+              <p>{tool === 'smart' ? 'Click an object to include it. Shift-click or right-click to exclude unwanted parts. Then choose Keep or Remove selection.' : tool === 'magic' ? 'Click any part of the image to erase connected pixels with similar colors. Hold Shift and click to restore.' : tool === 'erase' ? 'Paint over anything you want to remove. Make the brush smaller for fine details.' : 'Paint over erased parts to bring them back. Great for hair, clothes, and edges.'}</p>
             </div>
           </aside>
 
@@ -439,20 +617,38 @@ export default function App() {
               {frame ? (
                 <>
                   <div className="canvas-scroll">
-                    <canvas
-                      ref={canvasRef}
-                      width={frame.width}
-                      height={frame.height}
-                      className={'image-canvas ' + (tool === 'magic' ? 'cursor-wand' : 'cursor-brush')}
-                      style={{ transform: 'scale(' + (zoom / 100) + ')' }}
-                      onPointerDown={onPointerDown}
-                      onPointerMove={onPointerMove}
-                      onPointerUp={onPointerUp}
-                      onPointerCancel={onPointerUp}
-                      onLostPointerCapture={onPointerUp}
-                      aria-label="Interactive image canvas. Click a region to remove it or use the brushes."
-                    />
+                    <div className="canvas-visual" style={{ transform: 'scale(' + (zoom / 100) + ')' }}>
+                      <canvas
+                        ref={canvasRef}
+                        width={frame.width}
+                        height={frame.height}
+                        className={'image-canvas ' + (tool === 'magic' || tool === 'smart' ? 'cursor-wand' : 'cursor-brush')}
+                        onPointerDown={onPointerDown}
+                        onPointerMove={onPointerMove}
+                        onPointerUp={onPointerUp}
+                        onPointerCancel={onPointerUp}
+                        onLostPointerCapture={onPointerUp}
+                        onContextMenu={event => { if (tool === 'smart') event.preventDefault(); }}
+                        aria-label="Interactive image canvas. Click a region or object to select it, or use the brushes."
+                      />
+                      <canvas
+                        ref={smartOverlayRef}
+                        width={frame.width}
+                        height={frame.height}
+                        className="smart-overlay"
+                        style={{ display: tool === 'smart' && !showOriginal ? undefined : 'none' }}
+                        aria-hidden="true"
+                      />
+                      {tool === 'smart' && !showOriginal && smartPoints.map((point, index) => (
+                        <span key={index} className={'smart-point ' + (point.label === 1 ? 'positive' : 'negative')}
+                          style={{ left: (point.x * 100) + '%', top: (point.y * 100) + '%' }} aria-hidden="true">
+                          {point.label === 1 ? '+' : '−'}
+                        </span>
+                      ))}
+                    </div>
                   </div>
+                  {tool === 'smart' && smartHasPreview && !showOriginal &&
+                    <div className="selection-pill"><Sparkles size={13} /> OBJECT SELECTION PREVIEW</div>}
                   {showOriginal && <div className="original-pill"><Eye size={13} /> ORIGINAL PREVIEW</div>}
                   {isDragging && <div className="drop-overlay"><ImagePlus size={32} /><strong>Drop to replace your image</strong></div>}
                 </>
@@ -487,6 +683,33 @@ export default function App() {
             <h2>Make it yours</h2>
             <p className="panel-subtitle">A little magic, a lot of control.</p>
 
+            <div className={'smart-card ' + (tool === 'smart' ? 'smart-card-active' : '')}>
+              <div className="smart-heading"><Sparkles size={17} /><strong>Smart Select</strong><span>SLIMSAM</span></div>
+              <p className="smart-description">Select a person, pet, product or any object with a click.</p>
+              {tool !== 'smart' ? (
+                <button type="button" className="smart-open" disabled={!frame || !!busy} onClick={activateSmart}>
+                  <MousePointer2 size={16} /> Start object selection <ChevronRight size={16} />
+                </button>
+              ) : (
+                <>
+                  <div className="smart-status"><span className={'smart-status-dot ' + (smartReady ? 'is-ready' : '')} />
+                    {smartLoading ? 'Preparing image embeddings...' : smartPredicting ? 'Finding object...' :
+                      smartReady ? (smartHasPreview ? 'Selection preview ready' : 'Click an object in the image') : 'Preparing model...'}
+                  </div>
+                  <p className="smart-instructions">Click to include, Shift-click or right-click to exclude. You can add more points to refine the preview.</p>
+                  {smartScore !== null && <div className="smart-score">MODEL CONFIDENCE <strong>{Math.round(smartScore * 100)}%</strong></div>}
+                  <div className="smart-apply">
+                    <button type="button" className="smart-keep" disabled={!smartHasPreview || smartPredicting || smartLoading || !!busy}
+                      onClick={() => commitSmartSelection('keep')}><Check size={15} /> Keep selected</button>
+                    <button type="button" className="smart-remove" disabled={!smartHasPreview || smartPredicting || smartLoading || !!busy}
+                      onClick={() => commitSmartSelection('remove')}><Eraser size={15} /> Remove selected</button>
+                  </div>
+                  <button type="button" className="smart-clear" disabled={smartPoints.length === 0}
+                    onClick={clearSmartSelection}><X size={14} /> Clear selection ({smartPoints.length} {smartPoints.length === 1 ? 'point' : 'points'})</button>
+                </>
+              )}
+            </div>
+
             <div className="ai-card">
               <div className="ai-top"><span className="ai-badge"><Sparkles size={13} /> AI POWERED</span><span className="ai-star">✳</span></div>
               <h3>One-click cutout.</h3>
@@ -496,8 +719,10 @@ export default function App() {
             </div>
 
             <div className="settings-section">
-              <div className="settings-title"><span>SELECTION CONTROLS</span><span className="small-tag">{tool === 'magic' ? 'MAGIC' : 'BRUSH'}</span></div>
-              {tool === 'magic' ? (
+              <div className="settings-title"><span>SELECTION CONTROLS</span><span className="small-tag">{tool === 'smart' ? 'AI' : tool === 'magic' ? 'MAGIC' : 'BRUSH'}</span></div>
+              {tool === 'smart' ? (
+                <p className="settings-hint">The model uses positive and negative point prompts. Each click updates the selection preview. Apply the selection above when ready.</p>
+              ) : tool === 'magic' ? (
                 <>
                   <RangeControl label="Color tolerance" value={tolerance} unit="%" min={1} max={100} onChange={setTolerance} hint="Higher values select a wider range of colors." />
                   <RangeControl label="Edge feather" value={feather} unit="px" min={0} max={12} onChange={setFeather} hint="Softens the border of your selection." />
