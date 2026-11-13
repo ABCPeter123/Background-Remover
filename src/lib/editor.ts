@@ -155,6 +155,30 @@ export function stampBrush(
   }
 }
 
+/**
+ * Compose only the pixels touched by a brush stroke. Creating a small patch
+ * avoids repainting 8 million pixels on every pointer move.
+ */
+export function composeRegion(
+  frame: Frame, mask: Uint8Array,
+  left: number, top: number, width: number, height: number,
+  original = false,
+): Uint8ClampedArray {
+  const output = new Uint8ClampedArray(width * height * 4);
+  for (let row = 0; row < height; row++) {
+    const sourcePixel = (top + row) * frame.width + left;
+    const destinationByte = row * width * 4;
+    output.set(frame.pixels.subarray(sourcePixel * 4, (sourcePixel + width) * 4), destinationByte);
+    if (original) continue;
+    for (let col = 0; col < width; col++) {
+      const maskIndex = sourcePixel + col;
+      const index = destinationByte + col * 4 + 3;
+      output[index] = Math.round(output[index] * (255 - mask[maskIndex]) / 255);
+    }
+  }
+  return output;
+}
+
 export function composeImage(frame: Frame, mask: Uint8Array, original = false): ImageData {
   const data = new Uint8ClampedArray(frame.pixels);
   if (!original) {

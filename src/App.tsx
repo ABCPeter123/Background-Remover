@@ -6,7 +6,7 @@ import {
   Sparkles, Undo2, UploadCloud, WandSparkles, X, ZoomIn, ZoomOut,
 } from 'lucide-react';
 import {
-  alphaMaskFromBlob, composeImage, decodeImage, frameToBlob,
+  alphaMaskFromBlob, composeImage, composeRegion, decodeImage, frameToBlob,
   pngBlob, stampBrush, wandSelect, type Frame, type BrushMode,
 } from './lib/editor';
 import {
@@ -73,6 +73,7 @@ export default function App() {
   const historyRef = useRef<{ past: Uint8Array[]; future: Uint8Array[] }>({ past: [], future: [] });
   const strokeRef = useRef<{ active: boolean; x: number; y: number }>({ active: false, x: 0, y: 0 });
   const animationRef = useRef<number | null>(null);
+  const dirtyRectRef = useRef<{ left: number; top: number; right: number; bottom: number } | null>(null);
   const taskIdRef = useRef(0);
   const originalRef = useRef(false);
 
@@ -118,22 +119,53 @@ export default function App() {
   }, [syncHistory]);
 
   const redraw = useCallback(() => {
+    dirtyRectRef.current = null;
     const canvas = canvasRef.current;
     const currentFrame = frameRef.current;
     const currentMask = maskRef.current;
     if (!canvas || !currentFrame || !currentMask) return;
-    const context = canvas.getContext('2d', { willReadFrequently: true });
+    const context = canvas.getContext('2d');
     if (!context) return;
     context.putImageData(composeImage(currentFrame, currentMask, originalRef.current), 0, 0);
   }, []);
 
-  const scheduleRedraw = useCallback(() => {
+  const scheduleRedraw = useCallback((left: number, top: number, right: number, bottom: number) => {
+    const current = frameRef.current;
+    if (!current) return;
+    const next = {
+      left: Math.max(0, Math.floor(left)),
+      top: Math.max(0, Math.floor(top)),
+      right: Math.min(current.width, Math.ceil(right)),
+      bottom: Math.min(current.height, Math.ceil(bottom)),
+    };
+    const previous = dirtyRectRef.current;
+    dirtyRectRef.current = previous ? {
+      left: Math.min(previous.left, next.left),
+      top: Math.min(previous.top, next.top),
+      right: Math.max(previous.right, next.right),
+      bottom: Math.max(previous.bottom, next.bottom),
+    } : next;
     if (animationRef.current !== null) return;
     animationRef.current = requestAnimationFrame(() => {
       animationRef.current = null;
-      redraw();
+      const rect = dirtyRectRef.current;
+      dirtyRectRef.current = null;
+      const canvas = canvasRef.current;
+      const image = frameRef.current;
+      const mask = maskRef.current;
+      if (!rect || !canvas || !image || !mask || originalRef.current) return;
+      const width = rect.right - rect.left;
+      const height = rect.bottom - rect.top;
+      if (width <= 0 || height <= 0) return;
+      const context = canvas.getContext('2d');
+      if (!context) return;
+      const patch = new ImageData(
+        composeRegion(image, mask, rect.left, rect.top, width, height),
+        width, height,
+      );
+      context.putImageData(patch, rect.left, rect.top);
     });
-  }, [redraw]);
+  }, []);
 
 
   const drawSmartOverlay = useCallback(() => {
@@ -425,9 +457,13 @@ export default function App() {
         previous.y + (y - previous.y) * t,
         brushSize / 2, softness / 100, mode);
     }
+    const radius = brushSize / 2 + 2;
+    scheduleRedraw(
+      Math.min(previous.x, x) - radius, Math.min(previous.y, y) - radius,
+      Math.max(previous.x, x) + radius, Math.max(previous.y, y) + radius,
+    );
     strokeRef.current.x = x;
     strokeRef.current.y = y;
-    scheduleRedraw();
   };
 
   const onPointerDown = (event: React.PointerEvent<HTMLCanvasElement>) => {
@@ -467,7 +503,8 @@ export default function App() {
     event.currentTarget.setPointerCapture(event.pointerId);
     stampBrush(maskRef.current, frameRef.current.width, frameRef.current.height, point.x, point.y,
       brushSize / 2, softness / 100, tool === 'restore' ? 'restore' : 'erase');
-    scheduleRedraw();
+    const radius = brushSize / 2 + 2;
+    scheduleRedraw(point.x - radius, point.y - radius, point.x + radius, point.y + radius);
   };
 
   const onPointerMove = (event: React.PointerEvent<HTMLCanvasElement>) => {
@@ -479,7 +516,8 @@ export default function App() {
   const onPointerUp = () => {
     if (!strokeRef.current.active) return;
     strokeRef.current.active = false;
-    setRevision((v) => v + 1);
+    // Dirty canvas patches have already been scheduled. A full-image redraw
+    // here would undo their performance benefit.
   };
 
   const runAI = async () => {
