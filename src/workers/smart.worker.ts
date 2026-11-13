@@ -27,14 +27,14 @@ function send(message: SmartWorkerMessage, transfer: Transferable[] = []) {
   context.postMessage(message, transfer);
 }
 
-async function loadModel(id: number) {
+async function loadModel(id: number, mobile: boolean) {
   if (!loadingModel) {
     loadingModel = (async () => {
       const p = AutoProcessor.from_pretrained(MODEL_ID);
       let m: Awaited<ReturnType<typeof SamModel.from_pretrained>> | null = null;
       // The upstream SlimSAM example supports fp16 WebGPU inference.
       // Try GPU acceleration when available, then reliably fall back to CPU.
-      if ('gpu' in navigator) {
+      if (!mobile && 'gpu' in navigator) {
         try {
           send({ type: 'progress', id, stage: 'Starting GPU acceleration...' });
           m = await SamModel.from_pretrained(MODEL_ID, {
@@ -63,13 +63,13 @@ async function loadModel(id: number) {
   await loadingModel;
 }
 
-async function prepare(id: number, image: Blob) {
+async function prepare(id: number, image: Blob, mobile: boolean) {
   activeId = id;
   pending = null;
   processedImage = null;
   imageEmbeddings = null;
   try {
-    await loadModel(id);
+    await loadModel(id, mobile);
     if (id !== activeId) return;
     send({ type: 'progress', id, stage: 'Encoding your image...' });
     const raw = await RawImage.read(image);
@@ -132,13 +132,13 @@ async function processPendingSelections() {
 }
 
 context.onmessage = (event: MessageEvent<
-  | { type: 'prepare'; id: number; image: Blob }
+  | { type: 'prepare'; id: number; image: Blob; mobile: boolean }
   | { type: 'segment'; id: number; requestId: number; points: SmartPoint[] }
   | { type: 'reset'; id: number }
 >) => {
   const message = event.data;
   if (message.type === 'prepare') {
-    void prepare(message.id, message.image);
+    void prepare(message.id, message.image, message.mobile);
   } else if (message.type === 'reset') {
     activeId = message.id;
     processedImage = null;

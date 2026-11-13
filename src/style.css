@@ -451,3 +451,95 @@ button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid 
   .canvas-visual { max-height: 58vh; }
   .canvas-visual .image-canvas { max-height: 58vh; }
 }
+
+/* Touch-first controls live near the image instead of below two side panels. */
+.mobile-editor-dock, .mobile-smart-actions, .mobile-prompt-choice { display: none; }
+@media (max-width: 660px) {
+  .application { min-height: 100dvh; }
+  .main-content {
+    padding-bottom: calc(90px + env(safe-area-inset-bottom, 0px));
+  }
+  .editor-center { min-height: 0; }
+  .canvas-stage { min-height: min(58dvh, 470px); }
+  .canvas-scroll { padding: 10px; }
+  .canvas-visual, .canvas-visual .image-canvas { max-height: min(51dvh, 400px); }
+  .image-canvas { touch-action: none; -webkit-touch-callout: none; }
+  .mobile-editor-dock {
+    display: flex;
+    position: fixed;
+    z-index: 40;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    justify-content: space-around;
+    gap: 4px;
+    border-top: 1px solid #495a43;
+    background: #181f1bf5;
+    backdrop-filter: blur(18px);
+    -webkit-backdrop-filter: blur(18px);
+    padding: 8px 7px calc(8px + env(safe-area-inset-bottom, 0px));
+  }
+  .mobile-editor-dock button {
+    min-width: 0;
+    flex: 1 1 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid transparent;
+    border-radius: 9px;
+    background: transparent;
+    color: #c4d1bd;
+    min-height: 50px;
+    padding: 6px 3px;
+    font-size: 10px;
+    font-weight: 670;
+  }
+  .mobile-editor-dock button.active { background: #334829; border-color: #74965d; color: #d6f6a9; }
+  .mobile-editor-dock button.mobile-dock-export { background: #c4e98e; color: #1b2a17; font-weight: 800; }
+  .mobile-editor-dock button:disabled { opacity: .45; }
+  .mobile-smart-actions {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 7px;
+    position: absolute;
+    right: 8px;
+    bottom: 9px;
+    left: 8px;
+    z-index: 5;
+    pointer-events: none;
+  }
+  .mobile-smart-points, .mobile-smart-apply {
+    display: flex;
+    justify-content: center;
+    gap: 8px;
+    pointer-events: auto;
+  }
+  .mobile-smart-actions button, .mobile-prompt-choice button {
+    border: 1px solid #607b53;
+    border-radius: 7px;
+    padding: 10px 14px;
+    background: #1c2b20ea;
+    color: #d5e9c9;
+    font-size: 11px;
+    font-weight: 720;
+    min-height: 40px;
+  }
+  .mobile-smart-actions button.chosen, .mobile-prompt-choice button.active {
+    border-color: #bae890;
+    background: #c2ec8b;
+    color: #1b2816;
+  }
+  .mobile-smart-apply button:first-child { background: #c2ec8b; color: #182a15; }
+  .mobile-smart-apply button:last-child { background: #31412d; color: #e2f6d5; }
+  .mobile-smart-apply button:disabled { opacity: .5; }
+  .mobile-model-status { color: #d5eec3; background: #1b2d23eb; border-radius: 7px; padding: 7px; font-size: 11px; }
+  .mobile-prompt-choice { display: flex; gap: 8px; margin-bottom: 12px; }
+  .mobile-prompt-choice button { flex: 1; }
+  .selection-pill { top: 8px; bottom: auto; font-size: 9px; padding: 5px 8px; }
+  .feedback { bottom: calc(84px + env(safe-area-inset-bottom, 0px)); }
+  .canvas-header-actions .icon-button { min-width: 34px; min-height: 40px; }
+  .canvas-status { font-size: 10px; }
+}
