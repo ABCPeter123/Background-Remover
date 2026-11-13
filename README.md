@@ -7,11 +7,12 @@ A browser-based background remover with both AI-assisted cutouts and direct sele
 ## Features
 
 - **Upload** PNG, JPG, WebP, AVIF (browser dependent), or paste an image from your clipboard.
+- **Smart select (SlimSAM):** click the exact person, animal, or object you want to select, then keep or remove it. Add positive clicks to include details, or Shift-click/right-click to exclude areas. Review the live mask preview before applying. A Web Worker caches embeddings for faster follow-up clicks.
 - **Magic select:** click an area to remove connected pixels with similar colors. Hold **Shift** while clicking to restore an area.
 - **AI remove background:** one-click foreground segmentation with an on-device ONNX neural network. It detects the primary subject; it is not an interactive SAM model.
 - **Erase / restore brushes** to clean up fine details, with adjustable size and softness.
 - **Tune selections** with color tolerance and edge feather controls.
-- **Undo / redo** up to 12 mask edits. Shortcuts: Ctrl/Cmd+Z, Ctrl/Cmd+Shift+Z, V, E, R.
+- **Undo / redo** up to 12 mask edits. Shortcuts: Ctrl/Cmd+Z, Ctrl/Cmd+Shift+Z, S (Smart), V (Magic), E, R.
 - **Invert** the removed region to keep the opposite side of your selection.
 - **Preview** on checkerboard, white, charcoal, or mint backgrounds, with an original-image toggle.
 - **Export** a transparent PNG with optional trimming of transparent borders.
@@ -40,9 +41,10 @@ The app is a Vite static application. Vercel automatically deploys commits to `m
 
 ## Design and limitations
 
-- AI cutout identifies the image's primary foreground rather than segmenting arbitrary clicked objects. For specific regions, use Magic select, then refine with brushes.
+- The one-click IS-Net cutout identifies the primary foreground. For arbitrary objects, use **Smart Select**, powered by quantized **SlimSAM-77** (a compact Segment Anything model). It is not Meta's full SAM 2, nor Instagram's private sticker model.
 - Magic select uses an iterative, contiguous, color-distance flood fill. It works best when region colors are distinguishable; it is not semantic instance segmentation.
 - Very large input images are downscaled to at most 2800 pixels on the longest side and 8 megapixels total to manage browser memory. Exports use the processed image dimensions.
+- SlimSAM downloads approximately 14 MB of quantized model weights when first activated; the image encoder runs on a 1024px analysis image. Masks are upscaled to the editor's image size for preview and export. Encoding and decoding run in a browser Web Worker using ONNX Runtime Web. Actual latency depends on device performance.
 - AI model assets may take time to download initially, and inference performance depends on the device.
 - All processing is local, but downloading the optional AI model requires internet access.
 
@@ -50,6 +52,6 @@ The app is a Vite static application. Vercel automatically deploys commits to `m
 
 This application is distributed under the **GNU Affero General Public License v3.0 (AGPL-3.0)**. See [LICENSE.md](LICENSE.md).
 
-AI background segmentation uses [@imgly/background-removal](https://github.com/imgly/background-removal-js) v1.7.0 (AGPL-3.0). ONNX Runtime Web is licensed under the MIT license. For different commercial license terms for IMG.LY components, contact IMG.LY.
+AI background segmentation uses [@imgly/background-removal](https://github.com/imgly/background-removal-js) v1.7.0 (AGPL-3.0). Smart Select uses [SlimSAM-77](https://huggingface.co/Xenova/slimsam-77-uniform) (Apache-2.0) through [Transformers.js](https://github.com/huggingface/transformers.js) (Apache-2.0). ONNX Runtime Web is licensed under the MIT license. For different commercial license terms for IMG.LY components, contact IMG.LY.
 
 This project is independently implemented and draws on the general interaction concept of tap-to-select sticker cutouts. It does not use or claim access to Instagram's proprietary algorithm.

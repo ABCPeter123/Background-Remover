@@ -212,6 +212,8 @@ export default function App() {
       }
     };
     worker.onerror = () => {
+      worker.terminate();
+      if (smartWorkerRef.current === worker) smartWorkerRef.current = null;
       smartLoadingRef.current = false;
       smartReadyRef.current = false;
       setSmartLoading(false);
@@ -435,6 +437,10 @@ export default function App() {
     if (tool === 'smart') {
       if (!smartReadyRef.current) { void prepareSmart(); return; }
       const label: 0 | 1 = event.button === 2 || event.shiftKey ? 0 : 1;
+      if (label === 0 && !smartPointsRef.current.some(point => point.label === 1)) {
+        setNotice('Click the object first, then Shift-click or right-click to exclude areas.');
+        return;
+      }
       const nextPoints = [...smartPointsRef.current,
         promptToImageCoordinates({ ...point, label }, frameRef.current)];
       smartPointsRef.current = nextPoints;
