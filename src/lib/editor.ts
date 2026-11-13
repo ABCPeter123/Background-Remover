@@ -9,120 +9,84 @@ export type BrushMode = 'erase' | 'restore';
 const MAX_DIMENSION = 2800;
 const MAX_PIXELS = 8_000_000;
 
-export async function decodeImage(file: Blob): Promise<Frame> {
-  const bitmap = await createImageBitmap(file);
-  const scale = Math.min(
-    1,
-    MAX_DIMENSION / Math.max(bitmap.width, bitmap.height),
-    Math.sqrt(MAX_PIXELS / (bitmap.width * bitmap.height)),
-  );
-  const width = Math.max(1, Math.round(bitmap.width * scale));
-  const height = Math.max(1, Math.round(bitmap.height * scale));
-  const canvas = document.createElement('canvas');
-  canvas.width = width;
-  canvas.height = height;
-  const context = canvas.getContext('2d', { willReadFrequently: true });
-  if (!context) {
-    bitmap.close();
-    throw new Error('Your browser does not support Canvas image processing.');
-  }
-  context.drawImage(bitmap, 0, 0, width, height);
-  bitmap.close();
-  const pixels = context.getImageData(0, 0, width, height).data;
-  return { width, height, pixels };
+export type ImageLimits = { maxDimension: number; maxPixels: number };
+
+/** Phones should never create a multi-megapixel editing canvas in Safari. */
+export function imageLimitsForDevice(coarsePointer: boolean): ImageLimits {
+  return coarsePointer
+    ? { maxDimension: 1600, maxPixels: 2_000_000 }
+    : { maxDimension: MAX_DIMENSION, maxPixels: MAX_PIXELS };
 }
 
-type FloodResult = {
-  region: Uint8Array;
-  left: number;
-  top: number;
-  right: number;
-  bottom: number;
-};
-
-// Span-based flood fill needs no full-image Int32 queue. It is considerably
-// faster for broad, contiguous regions such as sky or studio backgrounds.
-function scanFloodRegion(
-  pixels: Uint8ClampedArray,
-  width: number,
-  height: number,
-  x: number,
-  y: number,
-  tolerance: number,
-): FloodResult {
-  const count = width * height;
-  const region = new Uint8Array(count);
-  const empty: FloodResult = { region, left: 0, top: 0, right: 0, bottom: 0 };
-  if (x < 0 || y < 0 || x >= width || y >= height) return empty;
-  const seed = Math.floor(y) * width + Math.floor(x);
-  const offset = seed * 4;
-  const sr = pixels[offset];
-  const sg = pixels[offset + 1];
-  const sb = pixels[offset + 2];
-  const sa = pixels[offset + 3];
-  const limit = (5 + (Math.max(0, Math.min(100, tolerance)) / 100) * 215) ** 2;
-  const visited = new Uint8Array(count);
-  const matches = (index: number): boolean => {
-    const p = index * 4;
-    const dr = pixels[p] - sr;
-    const dg = pixels[p + 1] - sg;
-    const db = pixels[p + 2] - sb;
-    const da = pixels[p + 3] - sa;
-    return 0.32 * dr * dr + 0.54 * dg * dg + 0.14 * db * db + 0.3 * da * da <= limit;
+export function scaledSize(width: number, height: number, limits: ImageLimits) {
+  const scale = Math.min(
+    1,
+    limits.maxDimension / Math.max(width, height),
+    Math.sqrt(limits.maxPixels / (width * height)),
+  );
+  return {
+    width: Math.max(1, Math.floor(width * scale)),
+    height: Math.max(1, Math.floor(height * scale)),
   };
-  const stack: number[] = [seed];
-  let left = width;
-  let top = height;
-  let right = 0;
-  let bottom = 0;
-  while (stack.length > 0) {
-    const start = stack.pop()!;
-    if (visited[start]) continue;
-    const row = Math.floor(start / width);
-    const rowStart = row * width;
-    let col = start - rowStart;
-    if (!matches(start)) {
-      visited[start] = 1;
-      continue;
-    }
-    while (col > 0 && !visited[rowStart + col - 1] && matches(rowStart + col - 1)) col--;
-    const rowLeft = col;
-    let aboveRun = false;
-    let belowRun = false;
-    for (; col < width; col++) {
-      const index = rowStart + col;
-      if (visited[index]) break;
-      if (!matches(index)) {
-        visited[index] = 1;
-        break;
-      }
-      visited[index] = 1;
-      region[index] = 255;
-      if (row > 0) {
-        const above = index - width;
-        if (!visited[above] && matches(above)) {
-          if (!aboveRun) stack.push(above);
-          aboveRun = true;
-        } else {
-          aboveRun = false;
-        }
-      }
-      if (row + 1 < height) {
-        const below = index + width;
-        if (!visited[below] && matches(below)) {
-          if (!belowRun) stack.push(below);
-          belowRun = true;
-        } else {
-          belowRun = false;
-        }
-      }
-    }
-    left = Math.min(left, rowLeft);
-    right = Math.max(right, col);
-    top = Math.min(top, row);
-    bottom = Math.max(bottom, row + 1);
+}
+
+export function isMobileDevice(): boolean {
+  return typeof window !== 'undefined' && typeof window.matchMedia === 'function' &&
+    window.matchMedia('(pointer: coarse) and (max-width: 1024px)').matches;
+}
+
+/**
+ * Decode with an Image element first on phones. iOS browsers may not support
+ * createImageBitmap for all photo formats, including HEIC/HEIF. Drawing the
+ * browser-decoded image into a bounded canvas avoids huge editing surfaces.
+ */
+async function decodeUsingImageElement(blob: Blob, limits: ImageLimits): Promise<Frame> {
+  const url = URL.createObjectURL(blob);
+  try {
+    const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const element = new Image();
+      element.onload = () => resolve(element);
+      element.onerror = () => reject(new Error('Your browser cannot open this image. Try a JPEG or PNG.'));
+      element.src = url;
+    });
+    const size = scaledSize(image.naturalWidth, image.naturalHeight, limits);
+    const canvas = document.createElement('canvas');
+    canvas.width = size.width;
+    canvas.height = size.height;
+    const context = canvas.getContext('2d', { willReadFrequently: true });
+    if (!context) throw new Error('Your browser cannot create an image editing canvas.');
+    context.drawImage(image, 0, 0, size.width, size.height);
+    return { ...size, pixels: context.getImageData(0, 0, size.width, size.height).data };
+  } finally {
+    URL.revokeObjectURL(url);
   }
-  return { region, left, top, right, bottom };
+}
+
+export async function decodeImage(file: Blob): Promise<Frame> {
+  const mobile = isMobileDevice();
+  const limits = imageLimitsForDevice(mobile);
+  // Safari's native Image decoder supports formats that createImageBitmap rejects.
+  if (mobile || typeof createImageBitmap !== 'function') {
+    return decodeUsingImageElement(file, limits);
+  }
+  let bitmap: ImageBitmap;
+  try {
+    bitmap = await createImageBitmap(file);
+  } catch {
+    return decodeUsingImageElement(file, limits);
+  }
+  try {
+    const size = scaledSize(bitmap.width, bitmap.height, limits);
+    const canvas = document.createElement('canvas');
+    canvas.width = size.width;
+    canvas.height = size.height;
+    const context = canvas.getContext('2d', { willReadFrequently: true });
+    if (!context) throw new Error('Your browser does not support Canvas image processing.');
+    context.drawImage(bitmap, 0, 0, size.width, size.height);
+    return { ...size, pixels: context.getImageData(0, 0, size.width, size.height).data };
+  } finally {
+    bitmap.close();
+  }
 }
 
 export function floodRegion(
@@ -343,17 +307,32 @@ export async function frameToBlob(frame: Frame, maxDimension = Infinity): Promis
 }
 
 export async function alphaMaskFromBlob(blob: Blob, frame: Frame): Promise<Uint8Array> {
-  const bitmap = await createImageBitmap(blob);
   const canvas = document.createElement('canvas');
   canvas.width = frame.width;
   canvas.height = frame.height;
   const context = canvas.getContext('2d', { willReadFrequently: true });
-  if (!context) {
-    bitmap.close();
-    throw new Error('Could not read AI mask.');
+  if (!context) throw new Error('Could not read AI mask.');
+  if (isMobileDevice() || typeof createImageBitmap !== 'function') {
+    const url = URL.createObjectURL(blob);
+    try {
+      const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+        const element = new Image();
+        element.onload = () => resolve(element);
+        element.onerror = () => reject(new Error('Could not decode the AI result.'));
+        element.src = url;
+      });
+      context.drawImage(image, 0, 0, frame.width, frame.height);
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  } else {
+    const bitmap = await createImageBitmap(blob);
+    try {
+      context.drawImage(bitmap, 0, 0, frame.width, frame.height);
+    } finally {
+      bitmap.close();
+    }
   }
-  context.drawImage(bitmap, 0, 0, frame.width, frame.height);
-  bitmap.close();
   const rgba = context.getImageData(0, 0, frame.width, frame.height).data;
   const result = new Uint8Array(frame.width * frame.height);
   for (let i = 0; i < result.length; i++) result[i] = 255 - rgba[i * 4 + 3];
