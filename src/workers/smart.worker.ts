@@ -6,11 +6,17 @@ const MODEL_ID = 'Xenova/slimsam-77-uniform';
 const context: DedicatedWorkerGlobalScope = self as DedicatedWorkerGlobalScope;
 
 // Avoid SharedArrayBuffer requirements on ordinary Vercel hosting.
-env.backends.onnx.wasm.numThreads = 1;
+if (env.backends.onnx.wasm) env.backends.onnx.wasm.numThreads = 1;
 
 let loadingModel: Promise<void> | null = null;
-let model: Awaited<ReturnType<typeof SamModel.from_pretrained>> | null = null;
-let processor: Awaited<ReturnType<typeof AutoProcessor.from_pretrained>> | null = null;
+type CachedSamModel = Awaited<ReturnType<typeof SamModel.from_pretrained>> & {
+  get_image_embeddings: (inputs: any) => Promise<any>;
+};
+type CachedSamProcessor = Awaited<ReturnType<typeof AutoProcessor.from_pretrained>> & {
+  post_process_masks: (...args: any[]) => Promise<any>;
+};
+let model: CachedSamModel | null = null;
+let processor: CachedSamProcessor | null = null;
 let processedImage: any = null;
 let imageEmbeddings: any = null;
 let activeId = -1;
@@ -31,8 +37,8 @@ async function loadModel(id: number) {
         }),
         AutoProcessor.from_pretrained(MODEL_ID),
       ]);
-      model = m;
-      processor = p;
+      model = m as CachedSamModel;
+      processor = p as CachedSamProcessor;
     })().catch(error => {
       loadingModel = null;
       throw error;
