@@ -7,7 +7,7 @@ import {
 } from 'lucide-react';
 import {
   alphaMaskFromBlob, composeImage, composeRegion, decodeImage, frameToBlob,
-  pngBlob, stampBrush, wandSelectWithBounds, type Frame, type BrushMode,
+  pngBlob, stampBrush, wandSelectWithBounds, isMobileDevice, type Frame, type BrushMode,
 } from './lib/editor';
 import {
   applySmartSelection, promptToImageCoordinates, upscaleSmartMask,
@@ -88,6 +88,8 @@ export default function App() {
   const [smartHasPreview, setSmartHasPreview] = useState(false);
   const [smartScore, setSmartScore] = useState<number | null>(null);
   const [smartStage, setSmartStage] = useState('');
+  const [mobileExclude, setMobileExclude] = useState(false);
+  const [mobileMode] = useState(() => isMobileDevice());
   const [tolerance, setTolerance] = useState(24);
   const [feather, setFeather] = useState(2);
   const [brushSize, setBrushSize] = useState(46);
@@ -197,6 +199,7 @@ export default function App() {
   }, []);
 
   const clearSmartSelection = useCallback(() => {
+    setMobileExclude(false);
     ++smartRequestRef.current;
     smartPointsRef.current = [];
     smartPreviewRef.current = null;
@@ -274,7 +277,7 @@ export default function App() {
       // Keeping encoding separate from decoding makes later clicks much faster.
       const blob = await frameToBlob(image, 1024);
       if (id !== smartVersionRef.current) return;
-      ensureSmartWorker().postMessage({ type: 'prepare', id, image: blob });
+      ensureSmartWorker().postMessage({ type: 'prepare', id, image: blob, mobile: isMobileDevice() });
     } catch (reason) {
       if (id !== smartVersionRef.current) return;
       smartLoadingRef.current = false;
@@ -292,7 +295,9 @@ export default function App() {
   // Pre-compute the image embedding after upload without blocking the editor.
   // When the user selects Smart Select, most of the startup work is done.
   useEffect(() => {
-    if (!frame) return;
+    // Phones cannot safely keep a heavyweight segmentation model running while
+    // the user is just uploading or working with brush and color-selection tools.
+    if (!frame || mobileMode) return;
     let idleHandle: number | undefined;
     const delay = window.setTimeout(() => {
       if ('requestIdleCallback' in window) {
@@ -305,7 +310,7 @@ export default function App() {
       clearTimeout(delay);
       if (idleHandle !== undefined && 'cancelIdleCallback' in window) window.cancelIdleCallback(idleHandle);
     };
-  }, [frame, prepareSmart]);
+  }, [frame, prepareSmart, mobileMode]);
 
   const commitSmartSelection = useCallback((action: 'keep' | 'remove') => {
     const current = maskRef.current;
@@ -350,7 +355,7 @@ export default function App() {
 
   const loadFile = useCallback(async (file?: File | null) => {
     if (!file) return;
-    if (!file.type.startsWith('image/')) {
+    if (!file.type.startsWith('image/') && !/\.(png|jpe?g|webp|avif|heic|heif|gif)$/i.test(file.name)) {
       setError('Choose a PNG, JPEG, WebP, or another image supported by your browser.');
       return;
     }
@@ -379,6 +384,7 @@ export default function App() {
       setFileName(file.name);
       setFileSize(file.size);
       setTool('magic');
+      setMobileExclude(false);
       setZoom(100);
       setProgress(0);
       setRevision((v) => v + 1);
@@ -500,10 +506,13 @@ export default function App() {
   const onPointerDown = (event: React.PointerEvent<HTMLCanvasElement>) => {
     if ((event.button !== 0 && !(tool === 'smart' && event.button === 2)) ||
       busy || showOriginal || !frameRef.current || !maskRef.current) return;
+    // Prevent a tap or brush movement from initiating image drag/long-press
+    // menus in mobile browsers while keeping scrolling outside the canvas usable.
+    if (event.pointerType === 'touch') event.preventDefault();
     const point = getPoint(event);
     if (tool === 'smart') {
       if (!smartReadyRef.current) { void prepareSmart(); return; }
-      const label: 0 | 1 = event.button === 2 || event.shiftKey ? 0 : 1;
+      const label: 0 | 1 = event.button === 2 || event.shiftKey || (event.pointerType === 'touch' && mobileExclude) ? 0 : 1;
       if (label === 0 && !smartPointsRef.current.some(point => point.label === 1)) {
         setNotice('Click the object first, then Shift-click or right-click to exclude areas.');
         return;
@@ -544,6 +553,7 @@ export default function App() {
 
   const onPointerMove = (event: React.PointerEvent<HTMLCanvasElement>) => {
     if (!strokeRef.current.active || !maskRef.current || !frameRef.current) return;
+    if (event.pointerType === 'touch') event.preventDefault();
     const point = getPoint(event);
     drawStroke(point.x, point.y);
   };
@@ -604,14 +614,32 @@ export default function App() {
     try {
       const blob = await pngBlob(current, mask, trim);
       const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = (fileName.replace(/\.[^.]+$/, '') || 'cutout') + '-cutout.png';
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
+      const outputName = (fileName.replace(/\.[^.]+$/, '') || 'cutout') + '-cutout.png';
+      let shared = false;
+      if (isMobileDevice() && typeof navigator.share === 'function' && typeof navigator.canShare === 'function') {
+        const attachment = new File([blob], outputName, { type: 'image/png' });
+        if (navigator.canShare({ files: [attachment] })) {
+          try {
+            await navigator.share({ files: [attachment], title: 'Your cutout PNG' });
+            shared = true;
+          } catch (reason) {
+            if (reason instanceof DOMException && reason.name === 'AbortError') {
+              setNotice('Share cancelled. You can export again.');
+              return;
+            }
+          }
+        }
+      }
+      if (!shared) {
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = outputName;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+      }
       window.setTimeout(() => URL.revokeObjectURL(url), 10000);
-      setNotice('Transparent PNG downloaded.');
+      setNotice(isMobileDevice() ? 'PNG ready. Save it from the share sheet or browser downloads.' : 'Transparent PNG downloaded.');
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Could not export image.');
     } finally {
@@ -712,7 +740,7 @@ export default function App() {
                         onPointerUp={onPointerUp}
                         onPointerCancel={onPointerUp}
                         onLostPointerCapture={onPointerUp}
-                        onContextMenu={event => { if (tool === 'smart') event.preventDefault(); }}
+                        onContextMenu={event => event.preventDefault()}
                         aria-label="Interactive image canvas. Click a region or object to select it, or use the brushes."
                       />
                       <canvas
@@ -733,6 +761,19 @@ export default function App() {
                   </div>
                   {tool === 'smart' && smartHasPreview && !showOriginal &&
                     <div className="selection-pill"><Sparkles size={13} /> OBJECT SELECTION PREVIEW</div>}
+                  {tool === 'smart' && !showOriginal && <div className="mobile-smart-actions">
+                    <div className="mobile-smart-points">
+                      <button type="button" className={!mobileExclude ? 'chosen' : ''} onClick={() => setMobileExclude(false)}>+ Include</button>
+                      <button type="button" className={mobileExclude ? 'chosen' : ''} onClick={() => setMobileExclude(true)}>− Exclude</button>
+                    </div>
+                    {smartHasPreview &&
+                      <div className="mobile-smart-apply">
+                        <button type="button" disabled={smartPredicting || smartLoading} onClick={() => commitSmartSelection('keep')}><Check size={15}/> Keep</button>
+                        <button type="button" disabled={smartPredicting || smartLoading} onClick={() => commitSmartSelection('remove')}><Eraser size={15}/> Remove</button>
+                      </div>}
+                    {smartLoading && <span className="mobile-model-status">{smartStage || 'Preparing AI...'}</span>}
+                    {smartPredicting && <span className="mobile-model-status">Finding object...</span>}
+                  </div>}
                   {showOriginal && <div className="original-pill"><Eye size={13} /> ORIGINAL PREVIEW</div>}
                   {isDragging && <div className="drop-overlay"><ImagePlus size={32} /><strong>Drop to replace your image</strong></div>}
                 </>
@@ -748,7 +789,7 @@ export default function App() {
                   <p>Drop an image to start removing backgrounds, objects, or anything in between.</p>
                   <button type="button" className="primary-button upload-main" onClick={() => fileInputRef.current?.click()}><UploadCloud size={19} /> Choose an image <ChevronRight size={18} /></button>
                   <div className="empty-meta">Drag & drop an image here <span>·</span> or paste from clipboard</div>
-                  <div className="format-tags"><span>PNG</span><span>JPG</span><span>WEBP</span><span>AVIF*</span></div>
+                  <div className="format-tags"><span>PNG</span><span>JPG</span><span>WEBP</span><span>HEIC*</span></div>
                 </div>
               )}
               {!!busy && <div className="busy-overlay" role="status" aria-live="polite"><div className="loading-spinner" /><strong>{busy}</strong><span>{busy.includes('AI') || busy.includes('model') ? 'The model runs on your device. First use downloads the AI model.' : 'Processing your image...'}</span>{progress > 0 && progress < 100 && <div className="progress-track"><div style={{ width: progress + '%' }} /></div>}</div>}
@@ -780,7 +821,11 @@ export default function App() {
                     {smartLoading ? (smartStage || 'Preparing image embeddings...') : smartPredicting ? 'Finding object...' :
                       smartReady ? (smartHasPreview ? 'Selection preview ready' : 'Click an object in the image') : 'Preparing model...'}
                   </div>
-                  <p className="smart-instructions">Click to include, Shift-click or right-click to exclude. You can add more points to refine the preview.</p>
+                  <p className="smart-instructions">{mobileMode ? 'Tap the object to include it. Switch to Exclude to remove areas from your selection.' : 'Click to include, Shift-click or right-click to exclude. You can add more points to refine the preview.'}</p>
+                  {mobileMode && <div className="mobile-prompt-choice" role="group" aria-label="Smart Select point type">
+                    <button type="button" className={!mobileExclude ? 'active' : ''} aria-pressed={!mobileExclude} onClick={() => setMobileExclude(false)}>+ Include</button>
+                    <button type="button" className={mobileExclude ? 'active' : ''} aria-pressed={mobileExclude} onClick={() => setMobileExclude(true)}>− Exclude</button>
+                  </div>
                   {smartScore !== null && <div className="smart-score">MODEL CONFIDENCE <strong>{Math.round(smartScore * 100)}%</strong></div>}
                   <div className="smart-apply">
                     <button type="button" className="smart-keep" disabled={!smartHasPreview || smartPredicting || smartLoading || !!busy}
@@ -839,8 +884,16 @@ export default function App() {
           </aside>
         </div>
 
+        {frame && <nav className="mobile-editor-dock" aria-label="Mobile editing tools">
+          <button type="button" className={tool === 'smart' ? 'active' : ''} disabled={!!busy} onClick={activateSmart} aria-label="Smart Select" aria-pressed={tool === 'smart'}><Sparkles size={20} /><span>Smart</span></button>
+          <button type="button" className={tool === 'magic' ? 'active' : ''} disabled={!!busy} onClick={() => setTool('magic')} aria-label="Magic Select" aria-pressed={tool === 'magic'}><WandSparkles size={20} /><span>Magic</span></button>
+          <button type="button" className={tool === 'erase' ? 'active' : ''} disabled={!!busy} onClick={() => setTool('erase')} aria-label="Erase brush" aria-pressed={tool === 'erase'}><Eraser size={20} /><span>Erase</span></button>
+          <button type="button" className={tool === 'restore' ? 'active' : ''} disabled={!!busy} onClick={() => setTool('restore')} aria-label="Restore brush" aria-pressed={tool === 'restore'}><Brush size={20} /><span>Restore</span></button>
+          <button type="button" className="mobile-dock-export" disabled={!!busy} onClick={() => void exportPng()} aria-label="Export transparent PNG"><ArrowDownToLine size={20} /><span>Save</span></button>
+        </nav>}
+
         {(error || notice) && <div className={'feedback ' + (error ? 'feedback-error' : 'feedback-success')} role="status"><span>{error || notice}</span><button type="button" aria-label="Dismiss notification" onClick={() => { setError(''); setNotice(''); }}><X size={15} /></button></div>}
-        <input ref={fileInputRef} type="file" accept="image/png,image/jpeg,image/webp,image/avif,image/gif" className="sr-only" onChange={(event) => void loadFile(event.target.files?.[0])} aria-label="Upload image" />
+        <input ref={fileInputRef} type="file" accept="image/*,.heic,.heif" className="sr-only" onChange={(event) => void loadFile(event.target.files?.[0])} aria-label="Upload image" />
       </main>
 
       <footer className="site-footer">
