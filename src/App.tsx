@@ -14,9 +14,9 @@ import {
   type SmartPoint, type SmartWorkerMessage,
 } from './lib/smart';
 import type { ContrastAssistMode } from './lib/contrast';
-import { hasCutout, refineMaskEdges } from './lib/edges';
+import { hasCutout, refineMaskEdges, refineEdgeBrushStamp } from './lib/edges';
 
-type Tool = 'smart' | 'magic' | 'erase' | 'restore';
+type Tool = 'smart' | 'magic' | 'erase' | 'restore' | 'refine';
 type Backdrop = 'checker' | 'white' | 'dark' | 'mint';
 
 const MAX_HISTORY = 12;
@@ -100,6 +100,7 @@ export default function App() {
   const [edgeShift, setEdgeShift] = useState(0);
   const [edgeSmooth, setEdgeSmooth] = useState(2);
   const [edgeProtection, setEdgeProtection] = useState(82);
+  const [edgeBrushSize, setEdgeBrushSize] = useState(26);
   const [autoPolish, setAutoPolish] = useState(true);
   const [showEdgeOutline, setShowEdgeOutline] = useState(false);
   const [outlineRevision, setOutlineRevision] = useState(0);
@@ -504,6 +505,7 @@ export default function App() {
       if (key === 'e') setTool('erase');
       if (key === 'r') setTool('restore');
       if (key === 'p' && frameRef.current) setShowEdgeOutline(v => !v);
+      if (key === 'f') setTool('refine');
     };
     const onPaste = (event: ClipboardEvent) => {
       const image = Array.from(event.clipboardData?.items ?? []).find((item) => item.type.startsWith('image/'));
@@ -534,17 +536,22 @@ export default function App() {
     if (!current || !mask) return;
     const previous = strokeRef.current;
     const distance = Math.hypot(x - previous.x, y - previous.y);
-    const step = Math.max(1, brushSize * 0.23);
+    const diameter = tool === 'refine' ? edgeBrushSize : brushSize;
+    const step = Math.max(1, diameter * 0.23);
     const count = Math.max(1, Math.ceil(distance / step));
     const mode: BrushMode = tool === 'restore' ? 'restore' : 'erase';
     for (let i = 1; i <= count; i++) {
       const t = i / count;
-      stampBrush(mask, current.width, current.height,
-        previous.x + (x - previous.x) * t,
-        previous.y + (y - previous.y) * t,
-        brushSize / 2, softness / 100, mode);
+      const px = previous.x + (x - previous.x) * t;
+      const py = previous.y + (y - previous.y) * t;
+      if (tool === 'refine') {
+        refineEdgeBrushStamp(current, mask, px, py, edgeBrushSize / 2, edgeProtection);
+      } else {
+        stampBrush(mask, current.width, current.height,
+          px, py, brushSize / 2, softness / 100, mode);
+      }
     }
-    const radius = brushSize / 2 + 2;
+    const radius = diameter / 2 + 3;
     scheduleRedraw(
       Math.min(previous.x, x) - radius, Math.min(previous.y, y) - radius,
       Math.max(previous.x, x) + radius, Math.max(previous.y, y) + radius,
@@ -599,9 +606,13 @@ export default function App() {
     }
     strokeRef.current = { active: true, pointerId: event.pointerId, ...point };
     try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* old browsers */ }
-    stampBrush(maskRef.current, frameRef.current.width, frameRef.current.height, point.x, point.y,
-      brushSize / 2, softness / 100, tool === 'restore' ? 'restore' : 'erase');
-    const radius = brushSize / 2 + 2;
+    if (tool === 'refine') {
+      refineEdgeBrushStamp(frameRef.current, maskRef.current, point.x, point.y, edgeBrushSize / 2, edgeProtection);
+    } else {
+      stampBrush(maskRef.current, frameRef.current.width, frameRef.current.height, point.x, point.y,
+        brushSize / 2, softness / 100, tool === 'restore' ? 'restore' : 'erase');
+    }
+    const radius = (tool === 'refine' ? edgeBrushSize : brushSize) / 2 + 3;
     scheduleRedraw(point.x - radius, point.y - radius, point.x + radius, point.y + radius);
   };
 
@@ -755,7 +766,8 @@ export default function App() {
     else setError('Please drop an image file.');
   };
 
-  const selectedToolName = tool === 'smart' ? 'Smart select (AI)' : tool === 'magic' ? 'Magic select' : tool === 'erase' ? 'Erase brush' : 'Restore brush';
+  const selectedToolName = tool === 'smart' ? 'Smart select (AI)' : tool === 'magic' ? 'Magic select' :
+    tool === 'erase' ? 'Erase brush' : tool === 'refine' ? 'Refine edge brush' : 'Restore brush';
 
   return (
     <div className="application">
@@ -793,6 +805,7 @@ export default function App() {
               <ToolButton active={tool === 'magic'} disabled={!frame || !!busy} icon={WandSparkles} title="Magic select" description="Click a region to remove" shortcut="V" onClick={() => setTool('magic')} />
               <ToolButton active={tool === 'erase'} disabled={!frame || !!busy} icon={Eraser} title="Erase brush" description="Remove any detail" shortcut="E" onClick={() => setTool('erase')} />
               <ToolButton active={tool === 'restore'} disabled={!frame || !!busy} icon={Brush} title="Restore brush" description="Bring pixels back" shortcut="R" onClick={() => setTool('restore')} />
+              <ToolButton active={tool === 'refine'} disabled={!frame || !!busy} icon={Scissors} title="Refine edge brush" description="Trace to smooth a jagged edge" shortcut="F" onClick={() => setTool('refine')} />
             </div>
 
             <div className="panel-divider" />
@@ -805,7 +818,7 @@ export default function App() {
 
             <div className="left-help">
               <span className="help-badge"><CircleHelp size={15} /> QUICK TIP</span>
-              <p>{tool === 'smart' ? 'Click an object to include it. Shift-click or right-click to exclude unwanted parts. Then choose Keep or Remove selection.' : tool === 'magic' ? 'Click any part of the image to erase connected pixels with similar colors. Hold Shift and click to restore.' : tool === 'erase' ? 'Paint over anything you want to remove. Make the brush smaller for fine details.' : 'Paint over erased parts to bring them back. Great for hair, clothes, and edges.'}</p>
+              <p>{tool === 'smart' ? 'Click an object to include it. Shift-click or right-click to exclude unwanted parts. Then choose Keep or Remove selection.' : tool === 'magic' ? 'Click any part of the image to erase connected pixels with similar colors. Hold Shift and click to restore.' : tool === 'refine' ? 'Paint directly along a cutout border to smooth jagged pixels while protecting real color edges. Use Edge Studio to trim or expand the entire silhouette.' : tool === 'erase' ? 'Paint over anything you want to remove. Make the brush smaller for fine details.' : 'Paint over erased parts to bring them back. Great for hair, clothes, and edges.'}</p>
             </div>
           </aside>
 
@@ -983,9 +996,16 @@ export default function App() {
             </div>
 
             <div className="settings-section">
-              <div className="settings-title"><span>SELECTION CONTROLS</span><span className="small-tag">{tool === 'smart' ? 'AI' : tool === 'magic' ? 'MAGIC' : 'BRUSH'}</span></div>
+              <div className="settings-title"><span>SELECTION CONTROLS</span><span className="small-tag">{tool === 'smart' ? 'AI' : tool === 'magic' ? 'MAGIC' : tool === 'refine' ? 'EDGE' : 'BRUSH'}</span></div>
               {tool === 'smart' ? (
                 <p className="settings-hint">The model uses positive and negative point prompts. Each click updates the selection preview. Apply the selection above when ready.</p>
+              ) : tool === 'refine' ? (
+                <>
+                  <RangeControl label="Refine brush size" value={edgeBrushSize} unit="px" min={4} max={120}
+                    onChange={setEdgeBrushSize} hint="Use a small brush to follow tricky outlines." />
+                  <RangeControl label="Protect image edges" value={edgeProtection} unit="%" min={0} max={100}
+                    onChange={setEdgeProtection} hint="Higher values follow real color boundaries." />
+                </>
               ) : tool === 'magic' ? (
                 <>
                   <RangeControl label="Color tolerance" value={tolerance} unit="%" min={1} max={100} onChange={setTolerance} hint="Higher values select a wider range of colors." />
@@ -1043,6 +1063,7 @@ export default function App() {
           <button type="button" className={tool === 'magic' ? 'active' : ''} disabled={!!busy} onClick={() => setTool('magic')} aria-label="Magic Select" aria-pressed={tool === 'magic'}><WandSparkles size={20} /><span>Magic</span></button>
           <button type="button" className={tool === 'erase' ? 'active' : ''} disabled={!!busy} onClick={() => setTool('erase')} aria-label="Erase brush" aria-pressed={tool === 'erase'}><Eraser size={20} /><span>Erase</span></button>
           <button type="button" className={tool === 'restore' ? 'active' : ''} disabled={!!busy} onClick={() => setTool('restore')} aria-label="Restore brush" aria-pressed={tool === 'restore'}><Brush size={20} /><span>Restore</span></button>
+          <button type="button" className={tool === 'refine' ? 'active' : ''} disabled={!!busy} onClick={() => setTool('refine')} aria-label="Refine edges brush" aria-pressed={tool === 'refine'}><Scissors size={20} /><span>Refine</span></button>
           <button type="button" className="mobile-dock-export" disabled={!!busy} onClick={() => void exportPng()} aria-label="Export transparent PNG"><ArrowDownToLine size={20} /><span>Save</span></button>
         </nav>}
 
