@@ -9,7 +9,7 @@ A browser-based background remover with both AI-assisted cutouts and direct sele
 - **Upload** PNG, JPG, WebP, AVIF (browser dependent), or paste an image from your clipboard.
 - **Smart select (SlimSAM):** click the exact person, animal, or object you want to select, then keep or remove it. Add positive clicks to include details, or Shift-click/right-click to exclude areas. Review the live mask preview before applying. A Web Worker caches embeddings for faster follow-up clicks.
 - **Magic select:** click an area to remove connected pixels with similar colors. Hold **Shift** while clicking to restore an area.
-- **AI remove background:** one-click foreground segmentation with an on-device ONNX neural network. It detects the primary subject; it is not an interactive SAM model. Model input is resized to its native 1024px resolution for faster processing, while PNG export preserves the editor's image dimensions.
+- **AI remove background:** one-click foreground segmentation with IS-Net. **Contrast Assist** offers Auto (default), Strong and Off. Auto detects bright, washed-out images and increases brightness separation and fine-detail contrast *only in the resized image passed to the model*. Strong forces enhancement for difficult white-on-white subjects. The export always uses the original image colors and the AI mask. A clearer input may help recognition, but enhancement cannot guarantee a correct mask in every image. Input is resized to the model's native 1024px resolution.
 - **Erase / restore brushes** to clean up fine details, with adjustable size and softness.
 - **Tune selections** with color tolerance and edge feather controls.
 - **Undo / redo** up to 12 mask edits. Shortcuts: Ctrl/Cmd+Z, Ctrl/Cmd+Shift+Z, S (Smart), V (Magic), E, R.
@@ -41,7 +41,7 @@ The app is a Vite static application. Vercel automatically deploys commits to `m
 
 ## Design and limitations
 
-- The one-click IS-Net cutout identifies the primary foreground. For arbitrary objects, use **Smart Select**, powered by quantized **SlimSAM-77** (a compact Segment Anything model). It is not Meta's full SAM 2, nor Instagram's private sticker model.
+- Contrast Assist preprocessing changes inference input only; it does not recolor the user's source image or export. The one-click IS-Net cutout identifies the primary foreground. For arbitrary objects, use **Smart Select**, powered by quantized **SlimSAM-77** (a compact Segment Anything model). It is not Meta's full SAM 2, nor Instagram's private sticker model.
 - Magic select uses an iterative, contiguous, color-distance flood fill. It works best when region colors are distinguishable; it is not semantic instance segmentation.
 - Very large input images are downscaled to at most 2800 pixels on the longest side and 8 megapixels total to manage browser memory. Exports use the processed image dimensions.
 - SlimSAM loads in a worker and prepares image embeddings after upload when the browser is idle. It uses fp16 WebGPU acceleration on supported browsers and falls back to quantized CPU inference. Its analysis image is 1024px; preview masks stay at model resolution, with full-size upscaling deferred until selection is applied. Actual latency depends on device performance.

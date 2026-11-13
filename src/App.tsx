@@ -13,6 +13,7 @@ import {
   applySmartSelection, promptToImageCoordinates, upscaleSmartMask,
   type SmartPoint, type SmartWorkerMessage,
 } from './lib/smart';
+import type { ContrastAssistMode } from './lib/contrast';
 
 type Tool = 'smart' | 'magic' | 'erase' | 'restore';
 type Backdrop = 'checker' | 'white' | 'dark' | 'mint';
@@ -90,6 +91,7 @@ export default function App() {
   const [smartStage, setSmartStage] = useState('');
   const [mobileExclude, setMobileExclude] = useState(false);
   const [mobileMode] = useState(() => isMobileDevice());
+  const [contrastAssist, setContrastAssist] = useState<ContrastAssistMode>('auto');
   const [tolerance, setTolerance] = useState(24);
   const [feather, setFeather] = useState(2);
   const [brushSize, setBrushSize] = useState(46);
@@ -575,7 +577,7 @@ export default function App() {
     try {
       // IS-Net always runs at a fixed 1024x1024 internal resolution.
       // Avoid shipping a multi-megapixel PNG through its decoding pipeline.
-      const input = await frameToBlob(current, 1024);
+      const input = await frameToBlob(current, 1024, contrastAssist);
       const { removeBackground } = await import('@imgly/background-removal');
       if (task !== taskIdRef.current) return;
       const output = await removeBackground(input, {
@@ -597,7 +599,7 @@ export default function App() {
       maskRef.current = next;
       setRevision((v) => v + 1);
       setProgress(100);
-      setNotice('AI cutout ready. Refine any areas with the brushes.');
+      setNotice('AI cutout ready. Original colors preserved. Refine edges with the brushes.');
     } catch (reason) {
       if (task === taskIdRef.current) setError(reason instanceof Error ? reason.message : 'AI cutout failed. Try the magic select tool.');
     } finally {
@@ -843,6 +845,22 @@ export default function App() {
               <div className="ai-top"><span className="ai-badge"><Sparkles size={13} /> AI POWERED</span><span className="ai-star">✳</span></div>
               <h3>One-click cutout.</h3>
               <p>Automatically find the main subject and remove what's behind it.</p>
+              <div className="contrast-controls">
+                <div className="contrast-heading"><span>CONTRAST ASSIST</span><span>FOR PALE IMAGES</span></div>
+                <div className="contrast-options" role="group" aria-label="AI contrast enhancement">
+                  {(['auto', 'strong', 'off'] as ContrastAssistMode[]).map(mode => (
+                    <button key={mode} type="button" className={contrastAssist === mode ? 'selected' : ''}
+                      aria-pressed={contrastAssist === mode} disabled={!!busy} onClick={() => setContrastAssist(mode)}>
+                      {mode === 'auto' ? 'Auto' : mode === 'strong' ? 'Strong' : 'Off'}
+                    </button>
+                  ))}
+                </div>
+                <p className="contrast-help">{contrastAssist === 'strong'
+                  ? 'Use when the AI misses a white or faint object. Your original colors stay unchanged.'
+                  : contrastAssist === 'auto'
+                    ? 'Boosts faint subjects only when the photo looks washed out.'
+                    : 'Uses the unadjusted photo for AI detection.'}</p>
+              </div>
               <button type="button" className="ai-action" disabled={!frame || !!busy} onClick={() => void runAI()}><WandSparkles size={18} /> Remove background <ChevronRight size={18} /></button>
               <small>No upload. Model downloads on first use.</small>
             </div>

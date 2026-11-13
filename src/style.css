@@ -543,3 +543,42 @@ button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid 
   .canvas-header-actions .icon-button { min-width: 34px; min-height: 40px; }
   .canvas-status { font-size: 10px; }
 }
+
+/* Contrast preprocessing controls, confined to one-click AI inference. */
+.contrast-controls {
+  margin: 13px 0;
+  padding: 12px 11px 10px;
+  border: 1px solid #627b4f75;
+  border-radius: 9px;
+  background: #141c1499;
+}
+.contrast-heading { display: flex; gap: 6px; justify-content: space-between; margin-bottom: 9px; }
+.contrast-heading span { font-size: 9px; letter-spacing: .8px; font-weight: 800; color: #c3dcae; }
+.contrast-heading span:last-child { font-weight: 600; color: #859e7f; }
+.contrast-options {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 5px;
+}
+.contrast-options button {
+  border: 1px solid #4b6247;
+  border-radius: 6px;
+  background: #243223;
+  color: #b7c9ae;
+  font-size: 11px;
+  font-weight: 700;
+  min-height: 36px;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.contrast-options button.selected {
+  border-color: #bce69c;
+  background: #bfdc90;
+  color: #1d2e18;
+}
+.contrast-options button:disabled { opacity: .45; cursor: default; }
+.contrast-help { margin: 9px 0 0 !important; font-size: 10px !important; line-height: 1.5 !important; color: #a4b89c !important; }
+@media (max-width: 660px) {
+  .contrast-options button { min-height: 45px; font-size: 12px; }
+  .contrast-help { font-size: 11px !important; }
+}

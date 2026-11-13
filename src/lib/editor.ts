@@ -1,3 +1,4 @@
+import { enhanceSegmentationPixels, type ContrastAssistMode } from './contrast';
 export type Frame = {
   width: number;
   height: number;
@@ -378,7 +379,11 @@ export async function pngBlob(frame: Frame, mask: Uint8Array, trim: boolean): Pr
   return new Promise((resolve, reject) => output.toBlob((blob) => blob ? resolve(blob) : reject(new Error('PNG encoding failed.')), 'image/png'));
 }
 
-export async function frameToBlob(frame: Frame, maxDimension = Infinity): Promise<Blob> {
+export async function frameToBlob(
+  frame: Frame,
+  maxDimension = Infinity,
+  contrastAssist: ContrastAssistMode = 'off',
+): Promise<Blob> {
   const canvas = document.createElement('canvas');
   canvas.width = frame.width;
   canvas.height = frame.height;
@@ -395,6 +400,18 @@ export async function frameToBlob(frame: Frame, maxDimension = Infinity): Promis
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'high';
     ctx.drawImage(canvas, 0, 0, output.width, output.height);
+  }
+  if (contrastAssist !== 'off') {
+    // The adjusted pixels go only to the segmentation model. We keep frame
+    // untouched, then compose its untouched colors with the inferred mask.
+    const outputContext = output.getContext('2d', { willReadFrequently: true });
+    if (!outputContext) throw new Error('Could not prepare AI contrast.');
+    const imageData = outputContext.getImageData(0, 0, output.width, output.height);
+    const result = enhanceSegmentationPixels(imageData.data, output.width, output.height, contrastAssist);
+    if (result.applied) {
+      imageData.data.set(result.pixels);
+      outputContext.putImageData(imageData, 0, 0);
+    }
   }
   return new Promise((resolve, reject) => output.toBlob((blob) => blob ? resolve(blob) : reject(new Error('Could not encode image.')), 'image/png'));
 }
