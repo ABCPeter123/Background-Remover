@@ -165,7 +165,7 @@ export function featherMask(input: Uint8Array, width: number, height: number, ra
   return output;
 }
 
-export function wandSelect(
+export function wandSelectWithBounds(
   frame: Frame,
   mask: Uint8Array,
   x: number,
@@ -173,10 +173,11 @@ export function wandSelect(
   tolerance: number,
   feather: number,
   mode: BrushMode,
-): Uint8Array {
+): { mask: Uint8Array; bounds: { left: number; top: number; right: number; bottom: number } } {
   const selected = scanFloodRegion(frame.pixels, frame.width, frame.height, x, y, tolerance);
   const next = mask.slice();
-  if (selected.right <= selected.left || selected.bottom <= selected.top) return next;
+  if (selected.right <= selected.left || selected.bottom <= selected.top)
+    return { mask: next, bounds: { left: 0, top: 0, right: 0, bottom: 0 } };
 
   const radius = Math.max(0, Math.min(12, Math.round(feather)));
   const left = Math.max(0, selected.left - radius);
@@ -209,7 +210,14 @@ export function wandSelect(
       else next[index] = Math.min(next[index], 255 - strength);
     }
   }
-  return next;
+  return { mask: next, bounds: { left, top, right, bottom } };
+}
+
+export function wandSelect(
+  frame: Frame, mask: Uint8Array, x: number, y: number,
+  tolerance: number, feather: number, mode: BrushMode,
+): Uint8Array {
+  return wandSelectWithBounds(frame, mask, x, y, tolerance, feather, mode).mask;
 }
 
 export function stampBrush(

@@ -7,7 +7,7 @@ import {
 } from 'lucide-react';
 import {
   alphaMaskFromBlob, composeImage, composeRegion, decodeImage, frameToBlob,
-  pngBlob, stampBrush, wandSelect, type Frame, type BrushMode,
+  pngBlob, stampBrush, wandSelectWithBounds, type Frame, type BrushMode,
 } from './lib/editor';
 import {
   applySmartSelection, promptToImageCoordinates, upscaleSmartMask,
@@ -525,9 +525,13 @@ export default function App() {
     }
     saveHistory();
     if (tool === 'magic') {
-      maskRef.current = wandSelect(frameRef.current, maskRef.current, point.x, point.y, tolerance, feather,
-        event.shiftKey ? 'restore' : 'erase');
-      setRevision((v) => v + 1);
+      const result = wandSelectWithBounds(
+        frameRef.current, maskRef.current, point.x, point.y, tolerance, feather,
+        event.shiftKey ? 'restore' : 'erase',
+      );
+      maskRef.current = result.mask;
+      const { left, top, right, bottom } = result.bounds;
+      if (right > left && bottom > top) scheduleRedraw(left, top, right, bottom);
       return;
     }
     strokeRef.current = { active: true, ...point };
