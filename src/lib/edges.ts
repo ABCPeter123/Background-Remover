@@ -132,3 +132,70 @@ export function refineMaskEdges(frame: Frame, mask: Uint8Array, options: EdgeRef
   const shifted = shiftMatte(mask, frame.width, frame.height, options.shift);
   return colorGuidedMatte(frame, shifted, options.smooth, options.protection);
 }
+
+/**
+ * A touch/pen-friendly local contour brush. Reads the source alpha within a
+ * small padded rectangle to keep updates deterministic while the user paints.
+ * It only changes pixels near existing cutout borders.
+ */
+export function refineEdgeBrushStamp(
+  frame: Frame,
+  mask: Uint8Array,
+  x: number,
+  y: number,
+  brushRadius: number,
+  protection = 80,
+  strength = .85,
+): { left: number; top: number; right: number; bottom: number } {
+  const { width, height, pixels } = frame;
+  if (mask.length !== width * height) throw new Error('Mask dimensions do not match image.');
+  const r = Math.max(1, Math.min(80, brushRadius));
+  const left = Math.max(0, Math.floor(x - r - 1));
+  const top = Math.max(0, Math.floor(y - r - 1));
+  const right = Math.min(width, Math.ceil(x + r + 1));
+  const bottom = Math.min(height, Math.ceil(y + r + 1));
+  const localWidth = right - left;
+  const localHeight = bottom - top;
+  const source = new Uint8Array(localWidth * localHeight);
+  for (let row = 0; row < localHeight; row++) {
+    const pos = (top + row) * width + left;
+    source.set(mask.subarray(pos, pos + localWidth), row * localWidth);
+  }
+  const sigma = 115 - Math.max(0, Math.min(100, protection));
+  const intensity = Math.max(0, Math.min(1, strength));
+  for (let yy = 1; yy < localHeight - 1; yy++) {
+    const py = top + yy;
+    for (let xx = 1; xx < localWidth - 1; xx++) {
+      const px = left + xx;
+      const d = Math.hypot(px + .5 - x, py + .5 - y);
+      if (d > r) continue;
+      const localIndex = yy * localWidth + xx;
+      const value = source[localIndex];
+      const adjacent = [
+        localIndex - 1, localIndex + 1,
+        localIndex - localWidth, localIndex + localWidth,
+      ];
+      if (adjacent.every(i => Math.abs(source[i] - value) < 10)) continue;
+      const p = (py * width + px) * 4;
+      const cr = pixels[p], cg = pixels[p + 1], cb = pixels[p + 2];
+      let total = 0, weighted = 0;
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+        const idx = (py + dy) * width + px + dx;
+        const color = idx * 4;
+        const diff = Math.sqrt(
+          .3 * (pixels[color] - cr) ** 2 +
+          .59 * (pixels[color + 1] - cg) ** 2 +
+          .11 * (pixels[color + 2] - cb) ** 2,
+        );
+        const weight = Math.exp(-diff * diff / (2 * sigma * sigma)) * (dx === 0 && dy === 0 ? 1 : .62);
+        weighted += source[localIndex + dy * localWidth + dx] * weight;
+        total += weight;
+      }
+      const falloff = Math.min(1, Math.max(0, (r - d) / Math.max(1, r * .22)));
+      const mix = intensity * falloff;
+      const index = py * width + px;
+      mask[index] = Math.round(value * (1 - mix) + (weighted / total) * mix);
+    }
+  }
+  return { left, top, right, bottom };
+}
