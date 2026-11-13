@@ -559,12 +559,17 @@ export default function App() {
     setBusy('Loading the AI model...');
     setProgress(0);
     try {
-      const input = await frameToBlob(current);
+      // IS-Net always runs at a fixed 1024x1024 internal resolution.
+      // Avoid shipping a multi-megapixel PNG through its decoding pipeline.
+      const input = await frameToBlob(current, 1024);
       const { removeBackground } = await import('@imgly/background-removal');
       if (task !== taskIdRef.current) return;
       const output = await removeBackground(input, {
         model: 'isnet_quint8',
         device: 'cpu',
+        // Skip expensive JS upscaling inside IMG.LY. Canvas will upscale
+        // the 1024px alpha mask directly to the original export dimensions.
+        rescale: false,
         output: { format: 'image/png', quality: 1 },
         progress: (_key: string, done: number, total: number) => {
           if (task !== taskIdRef.current || total <= 0) return;

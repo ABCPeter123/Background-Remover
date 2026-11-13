@@ -9,7 +9,7 @@ A browser-based background remover with both AI-assisted cutouts and direct sele
 - **Upload** PNG, JPG, WebP, AVIF (browser dependent), or paste an image from your clipboard.
 - **Smart select (SlimSAM):** click the exact person, animal, or object you want to select, then keep or remove it. Add positive clicks to include details, or Shift-click/right-click to exclude areas. Review the live mask preview before applying. A Web Worker caches embeddings for faster follow-up clicks.
 - **Magic select:** click an area to remove connected pixels with similar colors. Hold **Shift** while clicking to restore an area.
-- **AI remove background:** one-click foreground segmentation with an on-device ONNX neural network. It detects the primary subject; it is not an interactive SAM model.
+- **AI remove background:** one-click foreground segmentation with an on-device ONNX neural network. It detects the primary subject; it is not an interactive SAM model. Model input is resized to its native 1024px resolution for faster processing, while PNG export preserves the editor's image dimensions.
 - **Erase / restore brushes** to clean up fine details, with adjustable size and softness.
 - **Tune selections** with color tolerance and edge feather controls.
 - **Undo / redo** up to 12 mask edits. Shortcuts: Ctrl/Cmd+Z, Ctrl/Cmd+Shift+Z, S (Smart), V (Magic), E, R.
@@ -44,7 +44,7 @@ The app is a Vite static application. Vercel automatically deploys commits to `m
 - The one-click IS-Net cutout identifies the primary foreground. For arbitrary objects, use **Smart Select**, powered by quantized **SlimSAM-77** (a compact Segment Anything model). It is not Meta's full SAM 2, nor Instagram's private sticker model.
 - Magic select uses an iterative, contiguous, color-distance flood fill. It works best when region colors are distinguishable; it is not semantic instance segmentation.
 - Very large input images are downscaled to at most 2800 pixels on the longest side and 8 megapixels total to manage browser memory. Exports use the processed image dimensions.
-- SlimSAM's quantized model loads in a worker and image encoding starts when the browser is idle after an upload. A 1024px image is used for analysis. The preview uses the model-resolution mask; full-size mask upscaling is deferred until the user applies the selection. Actual latency depends on device performance.
+- SlimSAM loads in a worker and prepares image embeddings after upload when the browser is idle. It uses fp16 WebGPU acceleration on supported browsers and falls back to quantized CPU inference. Its analysis image is 1024px; preview masks stay at model resolution, with full-size upscaling deferred until selection is applied. Actual latency depends on device performance.
 - AI model assets may take time to download initially, and inference performance depends on the device.
 - All processing is local, but downloading the optional AI model requires internet access.
 
