@@ -160,10 +160,8 @@ export default function App() {
       if (width <= 0 || height <= 0) return;
       const context = canvas.getContext('2d');
       if (!context) return;
-      const patch = new ImageData(
-        composeRegion(image, mask, rect.left, rect.top, width, height),
-        width, height,
-      );
+      const patch = context.createImageData(width, height);
+      patch.data.set(composeRegion(image, mask, rect.left, rect.top, width, height));
       context.putImageData(patch, rect.left, rect.top);
     });
   }, []);

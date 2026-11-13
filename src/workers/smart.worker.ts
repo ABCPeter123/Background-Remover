@@ -30,15 +30,30 @@ function send(message: SmartWorkerMessage, transfer: Transferable[] = []) {
 async function loadModel(id: number) {
   if (!loadingModel) {
     loadingModel = (async () => {
-      const [m, p] = await Promise.all([
-        SamModel.from_pretrained(MODEL_ID, {
+      const p = AutoProcessor.from_pretrained(MODEL_ID);
+      let m: Awaited<ReturnType<typeof SamModel.from_pretrained>> | null = null;
+      // The upstream SlimSAM example supports fp16 WebGPU inference.
+      // Try GPU acceleration when available, then reliably fall back to CPU.
+      if ('gpu' in navigator) {
+        try {
+          send({ type: 'progress', id, stage: 'Starting GPU acceleration...' });
+          m = await SamModel.from_pretrained(MODEL_ID, {
+            dtype: 'fp16',
+            device: 'webgpu',
+          });
+        } catch (error) {
+          console.info('Smart Select GPU unavailable, using CPU:', error);
+        }
+      }
+      if (!m) {
+        send({ type: 'progress', id, stage: 'Starting optimized CPU mode...' });
+        m = await SamModel.from_pretrained(MODEL_ID, {
           dtype: 'q8',
           device: 'wasm',
-        }),
-        AutoProcessor.from_pretrained(MODEL_ID),
-      ]);
+        });
+      }
       model = m as CachedSamModel;
-      processor = p as CachedSamProcessor;
+      processor = (await p) as CachedSamProcessor;
     })().catch(error => {
       loadingModel = null;
       throw error;
