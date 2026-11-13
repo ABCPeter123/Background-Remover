@@ -308,12 +308,12 @@ export default function App() {
     setProgress(0);
     try {
       const input = await frameToBlob(current);
-      const { default: removeBackground } = await import('@imgly/background-removal');
+      const { removeBackground } = await import('@imgly/background-removal');
       if (task !== taskIdRef.current) return;
       const output = await removeBackground(input, {
         model: 'isnet_quint8',
         device: 'cpu',
-        output: { type: 'foreground', format: 'image/png', quality: 1 },
+        output: { format: 'image/png', quality: 1 },
         progress: (_key: string, done: number, total: number) => {
           if (task !== taskIdRef.current || total <= 0) return;
           setProgress(Math.max(0, Math.min(99, Math.round(done / total * 100))));
