@@ -825,7 +825,7 @@ export default function App() {
                   {mobileMode && <div className="mobile-prompt-choice" role="group" aria-label="Smart Select point type">
                     <button type="button" className={!mobileExclude ? 'active' : ''} aria-pressed={!mobileExclude} onClick={() => setMobileExclude(false)}>+ Include</button>
                     <button type="button" className={mobileExclude ? 'active' : ''} aria-pressed={mobileExclude} onClick={() => setMobileExclude(true)}>− Exclude</button>
-                  </div>
+                  </div>}
                   {smartScore !== null && <div className="smart-score">MODEL CONFIDENCE <strong>{Math.round(smartScore * 100)}%</strong></div>}
                   <div className="smart-apply">
                     <button type="button" className="smart-keep" disabled={!smartHasPreview || smartPredicting || smartLoading || !!busy}
