@@ -32,6 +32,99 @@ export async function decodeImage(file: Blob): Promise<Frame> {
   return { width, height, pixels };
 }
 
+type FloodResult = {
+  region: Uint8Array;
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+};
+
+// Span-based flood fill needs no full-image Int32 queue. It is considerably
+// faster for broad, contiguous regions such as sky or studio backgrounds.
+function scanFloodRegion(
+  pixels: Uint8ClampedArray,
+  width: number,
+  height: number,
+  x: number,
+  y: number,
+  tolerance: number,
+): FloodResult {
+  const count = width * height;
+  const region = new Uint8Array(count);
+  const empty: FloodResult = { region, left: 0, top: 0, right: 0, bottom: 0 };
+  if (x < 0 || y < 0 || x >= width || y >= height) return empty;
+  const seed = Math.floor(y) * width + Math.floor(x);
+  const offset = seed * 4;
+  const sr = pixels[offset];
+  const sg = pixels[offset + 1];
+  const sb = pixels[offset + 2];
+  const sa = pixels[offset + 3];
+  const limit = (5 + (Math.max(0, Math.min(100, tolerance)) / 100) * 215) ** 2;
+  const visited = new Uint8Array(count);
+  const matches = (index: number): boolean => {
+    const p = index * 4;
+    const dr = pixels[p] - sr;
+    const dg = pixels[p + 1] - sg;
+    const db = pixels[p + 2] - sb;
+    const da = pixels[p + 3] - sa;
+    return 0.32 * dr * dr + 0.54 * dg * dg + 0.14 * db * db + 0.3 * da * da <= limit;
+  };
+  const stack: number[] = [seed];
+  let left = width;
+  let top = height;
+  let right = 0;
+  let bottom = 0;
+  while (stack.length > 0) {
+    const start = stack.pop()!;
+    if (visited[start]) continue;
+    const row = Math.floor(start / width);
+    const rowStart = row * width;
+    let col = start - rowStart;
+    if (!matches(start)) {
+      visited[start] = 1;
+      continue;
+    }
+    while (col > 0 && !visited[rowStart + col - 1] && matches(rowStart + col - 1)) col--;
+    const rowLeft = col;
+    let aboveRun = false;
+    let belowRun = false;
+    for (; col < width; col++) {
+      const index = rowStart + col;
+      if (visited[index]) break;
+      if (!matches(index)) {
+        visited[index] = 1;
+        break;
+      }
+      visited[index] = 1;
+      region[index] = 255;
+      if (row > 0) {
+        const above = index - width;
+        if (!visited[above] && matches(above)) {
+          if (!aboveRun) stack.push(above);
+          aboveRun = true;
+        } else {
+          aboveRun = false;
+        }
+      }
+      if (row + 1 < height) {
+        const below = index + width;
+        if (!visited[below] && matches(below)) {
+          if (!belowRun) stack.push(below);
+          belowRun = true;
+        } else {
+          belowRun = false;
+        }
+      }
+    }
+    left = Math.min(left, rowLeft);
+    right = Math.max(right, col);
+    top = Math.min(top, row);
+    bottom = Math.max(bottom, row + 1);
+  }
+  return { region, left, top, right, bottom };
+}
+
 export function floodRegion(
   pixels: Uint8ClampedArray,
   width: number,
@@ -40,42 +133,7 @@ export function floodRegion(
   y: number,
   tolerance: number,
 ): Uint8Array {
-  const count = width * height;
-  const region = new Uint8Array(count);
-  if (x < 0 || y < 0 || x >= width || y >= height) return region;
-  const start = Math.floor(y) * width + Math.floor(x);
-  const offset = start * 4;
-  const sr = pixels[offset];
-  const sg = pixels[offset + 1];
-  const sb = pixels[offset + 2];
-  const sa = pixels[offset + 3];
-  const limit = Math.pow(5 + (Math.max(0, Math.min(100, tolerance)) / 100) * 215, 2);
-  const visited = new Uint8Array(count);
-  const queue = new Int32Array(count);
-  let head = 0;
-  let tail = 1;
-  queue[0] = start;
-  visited[start] = 1;
-
-  while (head < tail) {
-    const index = queue[head++];
-    const i = index * 4;
-    const dr = pixels[i] - sr;
-    const dg = pixels[i + 1] - sg;
-    const db = pixels[i + 2] - sb;
-    const da = pixels[i + 3] - sa;
-    const diff = (0.32 * dr * dr + 0.54 * dg * dg + 0.14 * db * db) + 0.3 * da * da;
-    if (diff > limit) continue;
-    region[index] = 255;
-
-    const xx = index % width;
-    const yy = (index / width) | 0;
-    if (xx > 0 && !visited[index - 1]) { visited[index - 1] = 1; queue[tail++] = index - 1; }
-    if (xx + 1 < width && !visited[index + 1]) { visited[index + 1] = 1; queue[tail++] = index + 1; }
-    if (yy > 0 && !visited[index - width]) { visited[index - width] = 1; queue[tail++] = index - width; }
-    if (yy + 1 < height && !visited[index + width]) { visited[index + width] = 1; queue[tail++] = index + width; }
-  }
-  return region;
+  return scanFloodRegion(pixels, width, height, x, y, tolerance).region;
 }
 
 export function featherMask(input: Uint8Array, width: number, height: number, radius: number): Uint8Array {
@@ -116,12 +174,40 @@ export function wandSelect(
   feather: number,
   mode: BrushMode,
 ): Uint8Array {
-  let region = floodRegion(frame.pixels, frame.width, frame.height, x, y, tolerance);
-  if (feather > 0) region = featherMask(region, frame.width, frame.height, feather);
+  const selected = scanFloodRegion(frame.pixels, frame.width, frame.height, x, y, tolerance);
   const next = mask.slice();
-  for (let i = 0; i < next.length; i++) {
-    if (mode === 'erase') next[i] = Math.max(next[i], region[i]);
-    else next[i] = Math.min(next[i], 255 - region[i]);
+  if (selected.right <= selected.left || selected.bottom <= selected.top) return next;
+
+  const radius = Math.max(0, Math.min(12, Math.round(feather)));
+  const left = Math.max(0, selected.left - radius);
+  const top = Math.max(0, selected.top - radius);
+  const right = Math.min(frame.width, selected.right + radius);
+  const bottom = Math.min(frame.height, selected.bottom + radius);
+  const width = right - left;
+  const height = bottom - top;
+
+  // Feather only the selection's bounding rectangle instead of the full image.
+  let local: Uint8Array | null = null;
+  if (radius > 0) {
+    const cropped = new Uint8Array(width * height);
+    for (let yy = selected.top; yy < selected.bottom; yy++) {
+      const src = yy * frame.width + selected.left;
+      const dst = (yy - top) * width + (selected.left - left);
+      cropped.set(selected.region.subarray(src, src + selected.right - selected.left), dst);
+    }
+    local = featherMask(cropped, width, height, radius);
+  }
+
+  for (let yy = top; yy < bottom; yy++) {
+    const rowOffset = yy * frame.width + left;
+    const localOffset = (yy - top) * width;
+    for (let xx = 0; xx < width; xx++) {
+      const index = rowOffset + xx;
+      const strength = local ? local[localOffset + xx] : selected.region[index];
+      if (!strength) continue;
+      if (mode === 'erase') next[index] = Math.max(next[index], strength);
+      else next[index] = Math.min(next[index], 255 - strength);
+    }
   }
   return next;
 }
@@ -213,7 +299,11 @@ export async function pngBlob(frame: Frame, mask: Uint8Array, trim: boolean): Pr
   const sourceContext = source.getContext('2d');
   if (!sourceContext) throw new Error('Could not export image.');
   sourceContext.putImageData(composeImage(frame, mask), 0, 0);
-  const bounds = trim ? trimBounds(frame, mask) : { x: 0, y: 0, width: frame.width, height: frame.height };
+  if (!trim) {
+    return new Promise((resolve, reject) =>
+      source.toBlob((blob) => blob ? resolve(blob) : reject(new Error('PNG encoding failed.')), 'image/png'));
+  }
+  const bounds = trimBounds(frame, mask);
   const output = document.createElement('canvas');
   output.width = bounds.width;
   output.height = bounds.height;
