@@ -199,14 +199,25 @@ export async function pngBlob(frame: Frame, mask: Uint8Array, trim: boolean): Pr
   return new Promise((resolve, reject) => output.toBlob((blob) => blob ? resolve(blob) : reject(new Error('PNG encoding failed.')), 'image/png'));
 }
 
-export async function frameToBlob(frame: Frame): Promise<Blob> {
+export async function frameToBlob(frame: Frame, maxDimension = Infinity): Promise<Blob> {
   const canvas = document.createElement('canvas');
   canvas.width = frame.width;
   canvas.height = frame.height;
   const context = canvas.getContext('2d');
   if (!context) throw new Error('Could not prepare image for AI.');
   context.putImageData(new ImageData(new Uint8ClampedArray(frame.pixels), frame.width, frame.height), 0, 0);
-  return new Promise((resolve, reject) => canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error('Could not encode image.')), 'image/png'));
+  const scale = Math.min(1, maxDimension / Math.max(frame.width, frame.height));
+  const output = scale < 1 ? document.createElement('canvas') : canvas;
+  if (output !== canvas) {
+    output.width = Math.max(1, Math.round(frame.width * scale));
+    output.height = Math.max(1, Math.round(frame.height * scale));
+    const ctx = output.getContext('2d');
+    if (!ctx) throw new Error('Could not resize image for AI.');
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(canvas, 0, 0, output.width, output.height);
+  }
+  return new Promise((resolve, reject) => output.toBlob((blob) => blob ? resolve(blob) : reject(new Error('Could not encode image.')), 'image/png'));
 }
 
 export async function alphaMaskFromBlob(blob: Blob, frame: Frame): Promise<Uint8Array> {
